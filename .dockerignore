@@ -1,0 +1,10 @@
+target/
+debug/
+logs/
+.git/
+.gitignore
+.envrc
+Dockerfile
+README.md
+*.bat
+config.toml
