@@ -1,0 +1,5 @@
+[web]
+host = "127.0.0.1:8000"
+
+[mongo]
+url = "YOUR_MONGODB_CONNECTION_STRING"

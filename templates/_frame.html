@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="{{ lang.code() }}" class="no-js" data-theme="dark">
+
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{% block title %}{% endblock %}</title>
+    <link rel="stylesheet" href="/assets/minireset.css" />
+    <link rel="stylesheet" href="/assets/pico.css" />
+    <script defer src="/assets/common.js"></script>
+    {%- block head %}{% endblock -%}
+</head>
+
+<body>
+    <nav class="container">
+        <ul>
+            <li><strong><a href="/" class="contrast">XIV Party Finder Reborn</a></strong></li>
+        </ul>
+        <ul>
+
+            <li role="list" dir="rtl">
+                <a href="javascript:void(0)" aria-haspopup="listbox">Stats</a>
+                <ul role="listbox">
+                    <li><a href="/stats">All Time</a></li>
+                    <li><a href="/stats/7days">7 Days</a></li>
+                </ul>
+            </li>
+            <li role="list" dir="rtl">
+                <a href="javascript:void(0)" aria-haspopup="listbox" style="text-transform: capitalize;">{{ lang.name()
+                    }}</a>
+                <ul role="listbox" aria-haspopup="listbox" id="language" data-accept="{{ lang.code() }}">
+                    <li><a href="javascript:void(0)" data-value="en">English</a></li>
+                    <li><a href="javascript:void(0)" data-value="ja">日本語</a></li>
+                    <li><a href="javascript:void(0)" data-value="de">Deutsch</a></li>
+                    <li><a href="javascript:void(0)" data-value="fr">Français</a></li>
+                </ul>
+            </li>
+        </ul>
+    </nav>
+    <div class="container">
+        {% block body %}{% endblock %}
+    </div>
+    <footer class="container"
+        style="text-align: center; padding: 2rem 0; font-size: 0.85em; color: var(--muted-color);">
+        Based on work by <a href="https://www.patreon.com/join/lojewalo" target="_blank">lojewalo</a> & <a
+            href="https://ko-fi.com/zeroeightsix" target="_blank">zeroeightsix</a>
+    </footer>
+</body>
+
+</html>

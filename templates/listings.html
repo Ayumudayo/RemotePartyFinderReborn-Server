@@ -1,0 +1,365 @@
+{% extends "_frame.html" %}
+
+{% block title -%}
+xivpf - listings
+{%- endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="/assets/common.css" />
+<link rel="stylesheet" href="/assets/listings.css?v=19" />
+<script defer src="/assets/list.js"></script>
+<script defer src="/assets/translations.js"></script>
+<script defer src="/assets/listings.js?v=6"></script>
+{% endblock %}
+
+{% block body %}
+<div id="container">
+    <div class="requires-js settings">
+        <div class="controls">
+            <input type="search" class="search" placeholder="Search" />
+            <select id="data-centre-filter">
+                <option value="All">All</option>
+                <optgroup label="North America">
+                    <option value="Aether">Aether</option>
+                    <option value="Crystal">Crystal</option>
+                    <option value="Dynamis">Dynamis</option>
+                    <option value="Primal">Primal</option>
+                </optgroup>
+                <optgroup label="Europe">
+                    <option value="Chaos">Chaos</option>
+                    <option value="Light">Light</option>
+                </optgroup>
+                <optgroup label="Japan">
+                    <option value="Elemental">Elemental</option>
+                    <option value="Gaia">Gaia</option>
+                    <option value="Mana">Mana</option>
+                    <option value="Meteor">Meteor</option>
+                </optgroup>
+                <optgroup label="Oceania">
+                    <option value="Materia">Materia</option>
+                </optgroup>
+            </select>
+        </div>
+        <div>
+            <div class="filter-controls">
+                <div style="margin-bottom: 0.5rem; font-weight: bold;" data-i18n="advanced">Advanced</div>
+                <div class="filter-card material-card">
+                    <!-- Roles -->
+                    <div class="filter-section">
+                        <h4>Roles</h4>
+                        <div class="roles" id="role-filter">
+                            {%- for (role, jobs) in JobFlags::get_all_jobs() %}
+                            <div class="role-group">
+                                <small>{{ role.text(lang) }}</small>
+                                <div class="jobs">
+                                    {%- for job in jobs %}
+                                    {%- let code = job.classjobs()[0].code() %}
+                                    <input type="checkbox" id="{{ code }}" value="{{ job.bits() }}">
+                                    <label for="{{ code }}" title="{{ code }}" class="{{ job.html_classes() }}">
+                                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                                            <use href="/assets/icons.svg#{{ code }}"></use>
+                                        </svg>
+                                    </label>
+                                    {%- endfor %}
+                                </div>
+                            </div>
+                            {%- endfor %}
+                        </div>
+                    </div>
+
+                    <!-- Options 섹션 제거됨: High-end Duty Only는 최상단 컨트롤로 이동 -->
+
+                    <!-- Objective -->
+                    <div class="filter-section">
+                        <h4 data-i18n="objective">Objective</h4>
+                        <div class="chip-group" id="objective-filter">
+                            <input type="checkbox" id="obj-1" value="1">
+                            <label for="obj-1" class="chip"><span data-i18n="duty_completion">Duty
+                                    Completion</span></label>
+
+                            <input type="checkbox" id="obj-2" value="2">
+                            <label for="obj-2" class="chip"><span data-i18n="practice">Practice</span></label>
+
+                            <input type="checkbox" id="obj-4" value="4">
+                            <label for="obj-4" class="chip"><span data-i18n="loot">Loot</span></label>
+                        </div>
+
+                        <div style="margin-top: 1rem;">
+                            <h4 data-i18n="min_item_level">Min Item Level</h4>
+                            <div class="chip-group">
+                                <input type="number" id="min-il-filter" class="il-input" placeholder="0" min="0"
+                                    max="999">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Conditions -->
+                    <div class="filter-section">
+                        <h4 data-i18n="conditions">Conditions</h4>
+                        <div class="chip-group" id="condition-filter">
+                            <input type="checkbox" id="cond-2" value="2">
+                            <label for="cond-2" class="chip"><span data-i18n="duty_complete">Duty
+                                    Complete</span></label>
+
+                            <input type="checkbox" id="cond-4" value="4">
+                            <label for="cond-4" class="chip"><span data-i18n="duty_incomplete">Duty
+                                    Incomplete</span></label>
+
+                            <input type="checkbox" id="cond-8" value="8">
+                            <label for="cond-8" class="chip"><span data-i18n="weekly_reward_unclaimed">Weekly Reward
+                                    Unclaimed</span></label>
+
+                            <input type="checkbox" id="cond-32" value="32">
+                            <label for="cond-32" class="chip"><span data-i18n="one_player_per_job">One Player per
+                                    Job</span></label>
+                        </div>
+                    </div>
+
+                    <!-- Content Type Filter & Select -->
+                    <div class="filter-section">
+                        <h4 data-i18n="content_type">Content Type</h4>
+                        <div class="chip-group" id="content-type-filter">
+                            <input type="checkbox" id="ct-ultimate" value="28">
+                            <label for="ct-ultimate" class="chip"><span data-i18n="ultimate">Ultimate</span></label>
+
+                            <input type="checkbox" id="ct-savage" value="5">
+                            <label for="ct-savage" class="chip"><span data-i18n="savage">Savage</span></label>
+
+                            <input type="checkbox" id="ct-extreme" value="4">
+                            <label for="ct-extreme" class="chip"><span data-i18n="extreme">Extreme</span></label>
+
+                            <input type="checkbox" id="ct-chaotic" value="37">
+                            <label for="ct-chaotic" class="chip"><span data-i18n="chaotic">Chaotic</span></label>
+                        </div>
+
+                        <div style="margin-top: 0.75rem;">
+                            <div class="content-select-container">
+                                <button type="button" class="content-select-trigger" id="content-select-trigger">
+                                    <span data-i18n="select_content">Select Content...</span>
+                                    <svg viewBox="0 0 24 24" fill="currentColor" class="dropdown-arrow"
+                                        aria-hidden="true">
+                                        <path d="M7 10l5 5 5-5z" />
+                                    </svg>
+                                </button>
+                                <div class="content-select-dropdown" id="content-select-dropdown">
+                                    <div class="content-select-list" id="content-select-list">
+                                        <!-- 동적으로 채워짐 -->
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="selected-contents" id="selected-contents">
+                                <!-- 선택된 콘텐츠 태그 표시 -->
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+
+
+            </div>
+        </div>
+    </div>
+    {%- if containers.is_empty() %}
+    <em class="no-listings" data-i18n="no_listings">No listings - download the plugin to help contribute!</em>
+    {%- endif %}
+
+    <em id="filter-no-listings" class="no-listings" style="display:none;" data-i18n="no_filter_results">No results found
+        matching your filters</em>
+
+    <div id="listings" class="list">
+        {%- for renderable in containers %}
+        {%- let listing = renderable.container.listing.borrow() %}
+        <div class="listing" data-id="{{ listing.id }}"
+            data-centre="{{ listing.data_centre_name().unwrap_or_default() }}"
+            data-pf-category="{{ listing.html_pf_category() }}" data-joinable-roles="{{ listing.joinable_roles() }}"
+            data-num-parties="{{ listing.num_parties }}" data-high-end="{{ listing.high_end() }}"
+            data-objective="{{ listing.objective.bits() }}" data-conditions="{{ listing.conditions.bits() }}"
+            data-search-area="{{ listing.search_area.bits() }}" data-min-item-level="{{ listing.min_item_level }}"
+            data-duty-id="{{ listing.duty }}" data-content-kind="{{ listing.content_kind() }}">
+
+            <div class="left">
+                {%- let duty_class %}
+                {%- if listing.is_cross_world() %}
+                {%- let duty_class = " cross" %}
+                {%- else %}
+                {%- let duty_class = " local" %}
+                {%- endif %}
+                <div class="duty{{ duty_class }}">{{ listing.duty_name(lang) }}</div>
+                <div class="description">
+                    {%- let desc = listing.description.full_text(lang) %}
+                    {%- if desc.trim().is_empty() -%}
+                    <em>None</em>
+                    {%- else -%}
+                    {%- let (colour_class, prepend_flags) = listing.prepend_flags() -%}
+                    {%- if !prepend_flags.is_empty() -%}
+                    <div class="flags {{ colour_class }}">{{ prepend_flags|safe }}</div>
+                    {%- endif -%}
+                    <div class="desc-text">{{- desc.trim() }}</div>
+                    {%- endif -%}
+                </div>
+                <div class="party">
+                    {%- for slot in listing.slots() %}
+                    {%- let filled %}
+                    {%- let title %}
+                    {%- let role_class %}
+                    {%- match slot %}
+                    {%- when Ok with (slot) %}
+                    {%- let filled = " filled" %}
+                    {%- match slot.role() %}
+                    {%- when Some with (role) %}
+                    {%- let role_class = " {}"|format(role.as_str().to_lowercase()) %}
+                    {%- when None %}
+                    {%- let role_class = "".to_string() %}
+                    {%- endmatch %}
+                    {%- let title = slot.code().to_string() %}
+                    {%- when Err with (tuple) %}
+                    {%- let filled = "" %}
+                    {%- let title = tuple.1.clone() %}
+                    {%- let role_class = " {}"|format(tuple.0) %}
+                    {%- endmatch %}
+                    <div class="slot{{ filled }}{{ role_class }}" title="{{ title }}">
+                        {%- if !filled.is_empty() %}
+                        <svg viewBox="0 0 32 32" aria-hidden="true">
+                            <use href="/assets/icons.svg#{{ title }}"></use>
+                        </svg>
+                        {%- endif %}
+                    </div>
+                    {%- endfor %}
+                    <div class="total">{{ listing.slots_filled() }}/{{ listing.slots_available }}</div>
+                </div>
+                <div class="members-list">
+                    <div class="members-header">Members ({{ renderable.members.len() }})</div>
+                    {%- if renderable.members.is_empty() %}
+                    <p class="no-members"><em data-i18n="no_members">No information available for other members</em>
+                    </p>
+                    {%- else %}
+                    <ul>
+                        {%- for member in renderable.members %}
+                        <li>
+                            {%- if let Some(code) = member.job_code() %}
+                            <svg class="job-icon {{ member.role_class() }}" viewBox="0 0 32 32" aria-hidden="true">
+                                <use href="/assets/icons.svg#{{ code }}"></use>
+                            </svg>
+                            {%- endif %}
+
+                            {%- if member.parse.has_secondary %}
+                            <div class="parse-dual">
+                                {%- match member.parse.primary_percentile %}
+                                {%- when Some with (p1) %}
+                                <span class="parse {{ member.parse.primary_color_class }}" title="P1 Best: {{ p1 }}">{{
+                                    p1
+                                    }}</span>
+                                {%- when None %}
+                                <span class="parse parse-none" title="P1: No data">--</span>
+                                {%- endmatch %}
+
+                                {%- match member.parse.secondary_percentile %}
+                                {%- when Some with (p2) %}
+                                <span class="parse {{ member.parse.secondary_color_class }}"
+                                    title="P2 Best: {{ p2 }}">{{ p2 }}</span>
+                                {%- when None %}
+                                <span class="parse parse-none" title="P2: No data">--</span>
+                                {%- endmatch %}
+                            </div>
+                            {%- else %}
+                            {%- match member.parse.primary_percentile %}
+                            {%- when Some with (percentile) %}
+                            <span class="parse {{ member.parse.primary_color_class }}"
+                                title="Best Parse: {{ percentile }}">{{
+                                percentile }}</span>
+                            {%- when None %}
+                            <span class="parse parse-none" title="No log data">--</span>
+                            {%- endmatch %}
+                            {%- endif %}
+
+                            {{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small>
+                        </li>
+                        {%- endfor %}
+                    </ul>
+                    {%- endif %}
+                </div>
+            </div>
+            <div class="middle">
+                <div class="stat">
+                    <div class="name">Min IL</div>
+                    <div class="value">{{ listing.min_item_level }}</div>
+                </div>
+            </div>
+            <div class="right meta">
+                <div class="item creator">
+                    <span class="text">{{ listing.name.full_text(lang) }} @ {{ listing.home_world_string() }}</span>
+                    {%- if renderable.leader_parse.has_secondary %}
+                    <div class="parse-dual">
+                        {%- match renderable.leader_parse.primary_percentile %}
+                        {%- when Some with (p1) %}
+                        <span class="parse {{ renderable.leader_parse.primary_color_class }}"
+                            title="P1 Best: {{ p1 }}">{{ p1
+                            }}</span>
+                        {%- when None %}
+                        <span class="parse parse-none" title="P1: No data">--</span>
+                        {%- endmatch %}
+
+                        {%- match renderable.leader_parse.secondary_percentile %}
+                        {%- when Some with (p2) %}
+                        <span class="parse {{ renderable.leader_parse.secondary_color_class }}"
+                            title="P2 Best: {{ p2 }}">{{ p2 }}</span>
+                        {%- when None %}
+                        <span class="parse parse-none" title="P2: No data">--</span>
+                        {%- endmatch %}
+                    </div>
+                    {%- else %}
+                    {%- match renderable.leader_parse.primary_percentile %}
+                    {%- when Some with (percentile) %}
+                    <span class="parse {{ renderable.leader_parse.primary_color_class }}"
+                        title="Best Parse: {{ percentile }}">{{ percentile }}</span>
+                    {%- when None %}
+                    <span class="parse parse-none" title="No log data">--</span>
+                    {%- endmatch %}
+                    {%- endif %}
+                    <span title="Creator">
+                        <svg class="icon" viewBox="0 0 32 32" aria-hidden="true">
+                            <use href="/assets/icons.svg#user"></use>
+                        </svg>
+                    </span>
+                </div>
+                <div class="item world">
+                    <span class="text">{{ listing.created_world_string() }}</span>
+                    <span title="Created on">
+                        <svg class="icon" viewBox="0 0 32 32" aria-hidden="true">
+                            <use href="/assets/icons.svg#sphere"></use>
+                        </svg>
+                    </span>
+                </div>
+                <div class="item expires" data-expires-in="{{ renderable.container.time_left_seconds() }}">
+                    <span class="text">{{ renderable.container.human_time_left() }}</span>
+                    <span title="Expires">
+                        <svg class="icon" viewBox="0 0 32 32" aria-hidden="true">
+                            <use href="/assets/icons.svg#stopwatch"></use>
+                        </svg>
+                    </span>
+                </div>
+                <div class="item updated" data-updated-at="{{ renderable.container.updated_at_timestamp() }}">
+                    <span class="text">{{ renderable.container.human_since_updated() }}</span>
+                    <span title="Updated">
+                        <svg class="icon" viewBox="0 0 32 32" aria-hidden="true">
+                            <use href="/assets/icons.svg#clock"></use>
+                        </svg>
+                    </span>
+                </div>
+            </div>
+        </div>
+        {%- endfor %}
+    </div>
+    <nav class="pagination-controls requires-js">
+        <a href="javascript:void(0)" class="page-btn prev" title="Previous Page">&lt;</a>
+        <ul class="pagination"></ul>
+        <a href="javascript:void(0)" class="page-btn next" title="Next Page">&gt;</a>
+    </nav>
+</div>
+<!-- Scroll to Top 버튼 -->
+<button id="scroll-to-top" class="scroll-to-top" aria-label="Scroll to top">
+    <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M7.41 15.41L12 10.83l4.59 4.58L18 14l-6-6-6 6z" />
+    </svg>
+</button>
+{% endblock %}

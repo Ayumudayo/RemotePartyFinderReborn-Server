@@ -1,0 +1,1022 @@
+#container {
+    margin: 0 1em;
+}
+
+/* =============================================================================
+   Material Design Filters
+   ============================================================================= */
+
+/* Card Container */
+/* Card Container */
+.material-card {
+    background-color: rgba(30, 33, 36, 0.95);
+    /* 아주 어둡고 불투명에 가까운 배경으로 가독성 확보 */
+    border-radius: 12px;
+    padding: 1.2rem;
+    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.2);
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1.5rem;
+    margin-top: 1rem;
+    border: 1px solid var(--muted-border-color);
+}
+
+@media (max-width: 50em) {
+    .material-card {
+        grid-template-columns: 1fr;
+    }
+}
+
+.filter-section h4 {
+    margin: 0 0 0.5rem 0;
+    font-size: 0.8em;
+    color: var(--meta-text);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
+
+/* 섹션 간 시각적 구분 */
+.filter-section {
+    padding-left: 0.75rem;
+    border-left: 3px solid var(--primary);
+}
+
+/* Chip Styles */
+.chip-group {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+}
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.3rem 0.8rem;
+    border-radius: 8px;
+    border: 1px solid var(--muted-border-color);
+    background-color: transparent;
+    color: var(--text);
+    font-size: 0.85em;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    user-select: none;
+}
+
+.chip:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+    border-color: var(--text-muted);
+}
+
+/* Hide Checkboxes */
+.chip-group input[type="checkbox"],
+.role-group input[type="checkbox"] {
+    display: none;
+}
+
+/* Selected Chip State */
+.chip-group input[type="checkbox"]:checked+.chip {
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+    border-color: var(--primary);
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.2);
+}
+
+/* Roles Layout */
+.roles {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.role-group {
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.role-group small {
+    display: none;
+    /* Hide role labels text */
+}
+
+/* Role Icons */
+.role-group .jobs {
+    display: flex;
+    gap: 0.3rem;
+}
+
+.role-group label {
+    width: 1.8rem;
+    height: 1.8rem;
+    border: 1px solid transparent;
+    /* No border by default */
+    border-radius: 4px;
+    padding: 2px;
+    cursor: pointer;
+    opacity: 0.5;
+    /* Dimmed when unselected */
+    transition: all 0.2s;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: rgba(255, 255, 255, 0.02);
+}
+
+.role-group label:hover {
+    opacity: 0.8;
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Active Roles */
+.role-group input:checked+label {
+    opacity: 1;
+    /* Glow effect instead of border */
+    background-color: rgba(255, 255, 255, 0.15);
+    box-shadow: 0 0 0 1px currentColor;
+}
+
+.role-group label.tank {
+    color: var(--tank-blue);
+}
+
+.role-group label.healer {
+    color: var(--healer-green);
+}
+
+.role-group label.dps {
+    color: var(--dps-red);
+}
+
+.role-group label svg {
+    width: 100%;
+    height: 100%;
+    fill: currentColor;
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.5));
+}
+
+/* =============================================================================
+   Listing Layout (Restored)
+   ============================================================================= */
+
+.js #listings {
+    border-top: 2px dashed var(--text);
+    margin-top: 1em;
+}
+
+#container>.settings>.controls {
+    display: flex;
+    justify-content: space-between;
+}
+
+#container>.settings>.controls>.search {
+    margin-right: 1em;
+}
+
+.no-listings {
+    display: block;
+    text-align: center;
+    margin-top: 3rem;
+    font-size: 1.1em;
+    color: var(--meta-text);
+}
+
+#listings>.listing {
+    display: grid;
+    grid-template-columns: 3fr auto 2fr;
+    gap: 1em;
+    margin: 0 -1em;
+    padding: 1em;
+}
+
+#listings>.listing:nth-child(2n) {
+    background-color: rgba(255, 255, 255, 0.025);
+    /* 리스팅 구분감 복구 (은은한 밝음) */
+}
+
+#listings>.listing .description {
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+#listings>.listing .description .desc-green {
+    color: var(--green-text);
+}
+
+#listings>.listing .description .desc-blue {
+    color: var(--light-blue-text);
+}
+
+#listings>.listing .description .desc-yellow {
+    color: var(--gold-text);
+}
+
+#listings>.listing .stat {
+    color: var(--meta-text);
+}
+
+#listings>.listing .duty {
+    font-size: 1.2em;
+}
+
+#listings>.listing .duty.cross {
+    color: var(--cross-duty-text);
+}
+
+#listings>.listing .duty.local {
+    color: var(--local-duty-text);
+}
+
+#listings>.listing .meta {
+    display: flex;
+    flex-direction: column;
+    margin-left: 1em;
+    color: var(--meta-text);
+    text-align: right;
+}
+
+#listings>.listing .meta>.item {
+    display: flex;
+    flex-flow: row nowrap;
+    align-self: flex-end;
+}
+
+#listings>.listing .meta>.item .icon {
+    height: 1em;
+    width: 1em;
+    fill: var(--text);
+    margin-left: .5em;
+    align-self: center;
+    justify-self: center;
+}
+
+#listings>.listing .party {
+    margin-top: .5em;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, 2em);
+    gap: .5em;
+}
+
+#listings>.listing .party>.total {
+    align-self: center;
+    justify-self: center;
+}
+
+#listings>.listing .party>.slot {
+    width: 2em;
+    height: 2em;
+    border: 1px solid currentColor;
+    margin-right: .5em;
+}
+
+#listings>.listing .party>.slot:not(.filled).dps.tank {
+    background: linear-gradient(to bottom, var(--tank-blue) 0%, var(--tank-blue) 50%, var(--dps-red) 50%);
+}
+
+#listings>.listing .party>.slot:not(.filled).dps.healer {
+    background: linear-gradient(to bottom, var(--healer-green) 0%, var(--healer-green) 50%, var(--dps-red) 50%);
+}
+
+#listings>.listing .party>.slot:not(.filled).tank.healer {
+    background: linear-gradient(to bottom, var(--tank-blue) 0%, var(--tank-blue) 50%, var(--healer-green) 50%);
+}
+
+#listings>.listing .party>.slot:not(.filled).tank.healer.dps {
+    background: linear-gradient(to bottom, var(--tank-blue) 0%, var(--tank-blue) 33%, var(--healer-green) 33%, var(--healer-green) 66%, var(--dps-red) 66%);
+}
+
+#listings>.listing .party>.slot:not(.filled).dps {
+    background-color: var(--dps-red);
+}
+
+#listings>.listing .party>.slot.filled {
+    background-color: var(--slot-background);
+    border-color: var(--icon-gold);
+}
+
+#listings>.listing .party>.slot.empty {
+    background-color: var(--slot-empty);
+}
+
+#listings>.listing .party>.slot.dps {
+    background-color: var(--dps-red);
+}
+
+#listings>.listing .party>.slot.healer {
+    background-color: var(--healer-green);
+}
+
+#listings>.listing .party>.slot.tank {
+    background-color: var(--tank-blue);
+}
+
+#listings>.listing .party>.slot>svg {
+    width: 100%;
+    height: 100%;
+    fill: var(--icon-gold);
+}
+
+#listings>.listing .party>.slot.filled:not(.dps):not(.healer):not(.tank)>svg {
+    fill: #C6C6C6;
+}
+
+@media (max-width: 50em) {
+    .material-card {
+        grid-template-columns: 1fr;
+        gap: 1rem;
+        padding: 1rem;
+    }
+
+    #listings>.listing {
+        grid-template-columns: 1fr;
+    }
+
+    .role-group label {
+        width: 2rem;
+        height: 2rem;
+    }
+}
+
+#listings>.listing .members-list {
+    margin-top: 0.5em;
+    font-size: 0.9em;
+}
+
+#listings>.listing .members-list .members-header {
+    color: var(--meta-text);
+    font-size: 0.85em;
+    margin-bottom: 0.3em;
+}
+
+#listings>.listing .members-list ul {
+    list-style: none;
+    padding-left: 1em;
+    margin: 0.2em 0;
+}
+
+#listings>.listing .members-list li {
+    margin-bottom: 0.1em;
+    display: flex;
+    align-items: center;
+    gap: 0.3em;
+}
+
+#listings>.listing .members-list .job-icon {
+    width: 1.2em;
+    height: 1.2em;
+    flex-shrink: 0;
+}
+
+#listings>.listing .members-list .job-icon.tank {
+    color: var(--tank-blue, #3a7fc4);
+}
+
+#listings>.listing .members-list .job-icon.healer {
+    color: var(--healer-green, #3dc483);
+}
+
+#listings>.listing .members-list .job-icon.dps {
+    color: var(--dps-red, #c44848);
+}
+
+#listings>.listing .members-list .world {
+    color: var(--meta-text);
+    font-size: 0.85em;
+}
+
+#listings>.listing .members-list li.leader {
+    font-weight: bold;
+    color: #ffcc00;
+}
+
+#listings>.listing .members-list .badge {
+    background-color: #ffcc00;
+    color: #1a1a2e;
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    font-size: 0.75em;
+    margin-left: 0.3em;
+    font-weight: bold;
+}
+
+#listings>.listing .members-list .no-members {
+    color: var(--meta-text);
+    font-size: 0.85em;
+    margin: 0.3em 0 0.3em 1em;
+}
+
+/* =============================================================================
+   FFLogs Parse 색상
+   ============================================================================= */
+
+/* Parse percentile 표시 */
+/* Parse percentile 표시 */
+#listings>.listing .members-list .parse,
+#listings>.listing .creator .parse {
+    font-weight: bold;
+    font-size: 0.8em;
+    padding: 0.1em 0.4em;
+    border-radius: 3px;
+    margin-right: 0.3em;
+    min-width: 2em;
+    text-align: center;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    /* height: 1.5em; 제거 - 패딩으로 자연스럽게 */
+    vertical-align: middle;
+}
+
+/* 파티장 이름과 parse 간격 */
+#listings>.listing .creator>.parse,
+#listings>.listing .creator>.parse-dual {
+    margin-left: 0.5em;
+    /* 간격을 조금 더 여유있게 */
+}
+
+#listings>.listing .creator .parse {
+    margin-right: 0;
+    /* 파티장 parse는 오른쪽에 여백 불필요 (맨 끝이거나 아이콘 앞) */
+}
+
+/* 파티장 행 레이아웃 */
+#listings>.listing .creator {
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+}
+
+#listings>.listing .creator .parse-dual {
+    display: inline-flex;
+    gap: 0.2em;
+    flex-shrink: 0;
+    margin-right: 0;
+    /* 글로벌 .parse-dual의 margin-right: 0.3em 오버라이드 */
+}
+
+#listings>.listing .creator .text {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex-grow: 1;
+    /* flex-grow로 남은 공간을 차지하여 parse가 오른쪽에 고정되도록 함 */
+}
+
+/* FFLogs 공식 색상 체계 */
+.parse-gold {
+    background-color: #E5CC80;
+    color: #1a1a1a;
+}
+
+.parse-pink {
+    background-color: #E268A8;
+    color: #1a1a1a;
+}
+
+.parse-orange {
+    background-color: #FF8000;
+    color: #1a1a1a;
+}
+
+.parse-purple {
+    background-color: #A335EE;
+    color: #ffffff;
+}
+
+.parse-blue {
+    background-color: #0070FF;
+    color: #ffffff;
+}
+
+.parse-green {
+    background-color: #1EFF00;
+    color: #1a1a1a;
+}
+
+.parse-gray {
+    background-color: #666666;
+    color: #ffffff;
+}
+
+/* Parse가 없는 경우 */
+.parse-none {
+    background-color: transparent;
+    color: var(--meta-text);
+    border: 1px dashed var(--meta-text);
+}
+
+/* =============================================================================
+   페이지네이션
+   ============================================================================= */
+
+.pagination-controls {
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 0.5em;
+    margin: 1.5em 0;
+    padding: 1em 0;
+    border-top: 1px solid var(--muted-border-color);
+    font-size: 1rem;
+    /* 폰트 크기 기준점 통일 */
+}
+
+.pagination {
+    display: flex;
+    gap: 5px;
+    /* 간격 대폭 확장 */
+    list-style: none;
+    padding: 0;
+    margin: 0 1em !important;
+    flex-wrap: wrap;
+    align-items: center;
+    /* 수직 정렬 재시도 */
+    justify-content: center;
+}
+
+.pagination li {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0 1px !important;
+    padding: 0 !important;
+    width: 2.2em;
+    /* 버튼 크기 확보 */
+    height: 2.2em;
+    flex-shrink: 0;
+    /* 줄어들지 않도록 */
+}
+
+.pagination li a {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    /* 패딩 제거하고 크기로 제어 */
+    text-decoration: none;
+    color: var(--text);
+    background-color: var(--muted-border-color);
+    border-radius: 4px;
+    width: 2.2em;
+    height: 2.2em;
+    font-size: inherit;
+    line-height: 1;
+    /* 라인 하이트 초기화 */
+    box-sizing: border-box !important;
+    text-align: center;
+    transition: background-color 0.2s;
+}
+
+.pagination li a:hover {
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+}
+
+.pagination li.active a {
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+    font-weight: bold;
+    pointer-events: none;
+    cursor: default;
+}
+
+.pagination li.disabled a {
+    pointer-events: none;
+    cursor: default;
+    background-color: transparent;
+    color: var(--text);
+}
+
+.page-btn {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
+    text-decoration: none;
+    color: var(--text);
+    background-color: var(--muted-border-color);
+    border-radius: 4px;
+    width: 2.2em;
+    height: 2.2em;
+    font-size: inherit;
+    line-height: 1;
+    /* 라인 하이트 초기화 */
+    box-sizing: border-box !important;
+    text-align: center;
+    transition: background-color 0.2s, opacity 0.2s;
+    user-select: none;
+    flex-shrink: 0;
+}
+
+.page-btn:hover:not(.disabled) {
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+}
+
+.page-btn.disabled {
+    opacity: 0.5;
+    cursor: default;
+    pointer-events: none;
+}
+
+.il-input {
+    width: 6em !important;
+    max-width: 10em !important;
+    min-width: 4em !important;
+    flex-grow: 0 !important;
+    background-color: transparent;
+    border: 1px solid var(--muted-border-color);
+    border-radius: 4px;
+    padding: 0.3em 0.5em;
+    color: var(--text);
+    font-size: 0.9em;
+}
+
+.il-input:focus {
+    border-color: var(--primary);
+    outline: none;
+}
+
+/* 콘텐츠 검색 입력 필드 */
+.content-search-input {
+    width: 100% !important;
+    max-width: 200px !important;
+    background-color: transparent;
+    border: 1px solid var(--muted-border-color);
+    border-radius: 4px;
+    padding: 0.4em 0.6em;
+    color: var(--text);
+    font-size: 0.9em;
+}
+
+.content-search-input:focus {
+    border-color: var(--primary);
+    outline: none;
+}
+
+/* 콘텐츠 멀티셀렉트 드롭다운 */
+.content-select-container {
+    position: relative;
+}
+
+.content-select-trigger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    width: 100%;
+    max-width: 400px;
+    padding: 0.4em 0.6em;
+    background-color: transparent;
+    border: 1px solid var(--muted-border-color);
+    border-radius: 4px;
+    color: var(--text);
+    font-size: 0.9em;
+    cursor: pointer;
+    transition: border-color 0.2s;
+}
+
+.content-select-trigger:hover {
+    border-color: var(--primary);
+}
+
+.content-select-trigger .dropdown-arrow {
+    width: 1em;
+    height: 1em;
+    transition: transform 0.2s;
+}
+
+.content-select-container.open .dropdown-arrow {
+    transform: rotate(180deg);
+}
+
+.content-select-dropdown {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    width: 500px;
+    max-height: 300px;
+    background-color: #1a1d21;
+    border: 1px solid var(--muted-border-color);
+    border-radius: 4px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5);
+    z-index: 100;
+    margin-top: 0.25rem;
+    overflow: hidden;
+}
+
+.content-select-container.open .content-select-dropdown {
+    display: block;
+}
+
+.content-select-search {
+    width: 100%;
+    padding: 0.5em;
+    border: none;
+    border-bottom: 1px solid var(--muted-border-color);
+    background-color: transparent;
+    color: var(--text);
+    font-size: 0.9em;
+}
+
+.content-select-search:focus {
+    outline: none;
+}
+
+.content-select-list {
+    max-height: 240px;
+    overflow-y: auto;
+}
+
+.content-select-item {
+    display: flex;
+    align-items: center;
+    padding: 0.5em 0.75em;
+    cursor: pointer;
+    transition: background-color 0.15s;
+}
+
+.content-select-item:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.content-select-item input {
+    margin-right: 0.5em;
+}
+
+.content-select-item.hidden {
+    display: none;
+}
+
+/* 선택된 콘텐츠 태그 */
+.selected-contents {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+    margin-top: 0.5rem;
+}
+
+.selected-content-tag {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.2em 0.5em;
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+    border-radius: 4px;
+    font-size: 0.8em;
+}
+
+.selected-content-tag .remove-btn {
+    margin-left: 0.3em;
+    cursor: pointer;
+    opacity: 0.7;
+}
+
+.selected-content-tag .remove-btn:hover {
+    opacity: 1;
+}
+
+
+/* P1/P2 Dual Parse Display */
+.parse-dual {
+    display: inline-flex;
+    gap: 0.2em;
+    margin-right: 0.3em;
+}
+
+.parse-dual .parse {
+    margin-right: 0;
+    margin-left: 0 !important;
+    /* 상위 규칙 오버라이드: 이중 마진 방지 */
+    min-width: 0;
+    font-size: 0.75em;
+    padding: 0.1em 0.3em;
+    white-space: nowrap;
+}
+
+/* =============================================================================
+   High-end Duty 토글 (검색창 옆 배치)
+   ============================================================================= */
+
+.high-end-toggle {
+    display: flex;
+    align-items: center;
+    margin-left: 1rem;
+}
+
+.high-end-toggle input[type="checkbox"] {
+    display: none;
+}
+
+.high-end-toggle .chip {
+    font-size: 0.85em;
+    padding: 0.4rem 0.8rem;
+}
+
+/* =============================================================================
+   Scroll to Top 버튼
+   ============================================================================= */
+
+.scroll-to-top {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    width: 3.5rem;
+    height: 3.5rem;
+    border-radius: 8px;
+    background-color: var(--primary);
+    color: var(--primary-inverse);
+    border: none;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    visibility: hidden;
+    transition: opacity 0.3s, visibility 0.3s, transform 0.2s;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    z-index: 1000;
+}
+
+.scroll-to-top svg {
+    width: 2rem;
+    height: 2rem;
+}
+
+.scroll-to-top:hover {
+    transform: scale(1.1);
+    background-color: var(--primary-hover);
+}
+
+.scroll-to-top.visible {
+    opacity: 1;
+    visibility: visible;
+}
+
+@media (max-width: 50em) {
+    .scroll-to-top {
+        bottom: 1rem;
+        right: 1rem;
+        width: 2.5rem;
+        height: 2.5rem;
+    }
+
+    .scroll-to-top svg {
+        width: 1.25rem;
+        height: 1.25rem;
+    }
+
+    .high-end-toggle {
+        margin-left: 0.5rem;
+    }
+
+    .high-end-toggle .chip {
+        font-size: 0.75em;
+        padding: 0.3rem 0.6rem;
+    }
+}
+
+/* =============================================================================
+   Focus Visible 스타일 (접근성)
+   ============================================================================= */
+
+.chip:focus-visible,
+.role-group label:focus-visible,
+.pagination li a:focus-visible,
+.page-btn:focus-visible,
+.content-select-trigger:focus-visible,
+#scroll-to-top:focus-visible,
+#data-centre-filter:focus-visible,
+.search:focus-visible {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* role-group label이 키보드로 선택 가능하도록 tabindex 지원 */
+.role-group input:focus-visible+label {
+    outline: 2px solid var(--primary);
+    outline-offset: 2px;
+}
+
+/* =============================================================================
+   마이크로 애니메이션 (UX)
+   ============================================================================= */
+
+#listings>.listing {
+    transition: transform 0.15s ease-out, box-shadow 0.15s ease-out, background-color 0.15s ease-out;
+}
+
+#listings>.listing:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.25);
+}
+
+/* Chip 호버/활성 애니메이션 */
+.chip {
+    transition: background-color 0.2s ease, border-color 0.2s ease, transform 0.1s ease;
+}
+
+.chip:active {
+    transform: scale(0.97);
+}
+
+/* 버튼 호버 효과 강화 */
+.page-btn,
+.pagination li a {
+    transition: background-color 0.2s ease, transform 0.1s ease;
+}
+
+.page-btn:active,
+.pagination li a:active {
+    transform: scale(0.95);
+}
+
+/* =============================================================================
+   터치 최적화 (모바일)
+   ============================================================================= */
+
+body {
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: rgba(255, 255, 255, 0.1);
+}
+
+/* 터치 타겟 최소 크기 보장 (44px 권장) */
+.chip {
+    min-height: 2.2rem;
+}
+
+.page-btn,
+.pagination li a {
+    min-width: 2.5rem;
+    min-height: 2.5rem;
+}
+
+@media (max-width: 50em) {
+    .role-group label {
+        min-width: 2.5rem;
+        min-height: 2.5rem;
+    }
+}
+
+/* =============================================================================
+   스켈레톤 로딩 UI
+   ============================================================================= */
+
+.skeleton {
+    background: linear-gradient(90deg,
+            var(--grey-800, #2C2F34) 25%,
+            var(--muted-border-color) 50%,
+            var(--grey-800, #2C2F34) 75%);
+    background-size: 200% 100%;
+    animation: skeleton-loading 1.5s infinite;
+    border-radius: 4px;
+}
+
+.skeleton-text {
+    height: 1em;
+    margin-bottom: 0.5em;
+}
+
+.skeleton-text.short {
+    width: 60%;
+}
+
+.skeleton-text.medium {
+    width: 80%;
+}
+
+.skeleton-text.full {
+    width: 100%;
+}
+
+@keyframes skeleton-loading {
+    0% {
+        background-position: 200% 0;
+    }
+
+    100% {
+        background-position: -200% 0;
+    }
+}
+
+/* =============================================================================
+   Reduced Motion 지원 (접근성)
+   ============================================================================= */
+
+@media (prefers-reduced-motion: reduce) {
+
+    #listings>.listing,
+    .chip,
+    .page-btn,
+    .pagination li a,
+    .scroll-to-top,
+    .skeleton {
+        transition: none !important;
+        animation: none !important;
+    }
+
+    #listings>.listing:hover {
+        transform: none;
+    }
+}
