@@ -124,6 +124,7 @@ pub async fn listings_handler(
                             home_world: 0,
                             last_seen: chrono::Utc::now(),
                             seen_count: 0,
+                            account_id: "-1".to_string(),
                         });
                         
                         // 잡 정보가 없는 멤버는 표시하지 않음 (Ghost Member 방지)
@@ -278,6 +279,7 @@ pub async fn contribute_detail_handler(
             content_id: detail.leader_content_id,
             name: detail.leader_name.clone(),
             home_world: detail.home_world,
+            account_id: 0, // UploadablePlayer는 u64 유지
         };
         let upsert_res = upsert_players(state.players_collection(), &[leader]).await;
         tracing::debug!("Upserted leader {}: {:?}", detail.leader_content_id, upsert_res);
