@@ -2,6 +2,11 @@
     margin: 0 1em;
 }
 
+/* Pico의 .container max-width를 늘려 리스팅 폭 확보 */
+body > div.container {
+    max-width: 1400px;
+}
+
 /* =============================================================================
    Material Design Filters
    ============================================================================= */
@@ -19,6 +24,13 @@
     gap: 1.5rem;
     margin-top: 1rem;
     border: 1px solid var(--muted-border-color);
+}
+
+/* 필터 카드(상세 설정)는 너무 넓지 않게 */
+.filter-card.material-card {
+    max-width: 1000px;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 @media (max-width: 50em) {
@@ -183,7 +195,7 @@
 
 #listings>.listing {
     display: grid;
-    grid-template-columns: 3fr auto 2fr;
+    grid-template-columns: minmax(0, 3fr) auto minmax(0, 2.5fr);
     gap: 1em;
     margin: 0 -1em;
     padding: 1em;
@@ -233,12 +245,14 @@
     margin-left: 1em;
     color: var(--meta-text);
     text-align: right;
+    min-width: 0;
 }
 
 #listings>.listing .meta>.item {
     display: flex;
     flex-flow: row nowrap;
-    align-self: flex-end;
+    justify-content: flex-end;
+    min-width: 0;
 }
 
 #listings>.listing .meta>.item .icon {
@@ -359,6 +373,38 @@
     display: flex;
     align-items: center;
     gap: 0.3em;
+    flex-wrap: nowrap;
+}
+
+/* Pico는 small을 block/100%로 잡아 줄바꿈이 발생할 수 있음 */
+#listings>.listing .members-list li small {
+    display: inline;
+    width: auto;
+    margin: 0;
+    white-space: nowrap;
+}
+
+/* 아이콘/parse/prog는 고정, 텍스트는 한 줄 + 말줄임 */
+#listings>.listing .members-list li .member-info {
+    flex: 1 1 auto;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    /* 이름이 짧을 때 progress가 너무 멀어지지 않도록, 성장 폭을 제한 */
+    max-width: clamp(18ch, 42vw, 32ch);
+}
+
+/* 최종 보스 HP% 전용 컬럼(미클리어자만 표시). 빈 경우에도 폭은 유지 */
+#listings>.listing .members-list li .member-prog {
+    flex: 0 0 auto;
+    width: 2.8em;
+    display: inline-flex;
+    justify-content: flex-end;
+}
+
+#listings>.listing .members-list li .member-prog .prog {
+    margin-right: 0;
 }
 
 #listings>.listing .members-list .job-icon {
@@ -409,22 +455,31 @@
    FFLogs Parse 색상
    ============================================================================= */
 
-/* Parse percentile 표시 */
-/* Parse percentile 표시 */
+/* Parse / Progress 공통 셀 크기 (칸 사이즈 통일) */
 #listings>.listing .members-list .parse,
-#listings>.listing .creator .parse {
-    font-weight: bold;
-    font-size: 0.8em;
-    padding: 0.1em 0.4em;
+#listings>.listing .members-list .prog,
+#listings>.listing .creator .parse,
+#listings>.listing .creator .prog {
+    font-weight: 700;
+    font-size: 0.78em;
+    width: 2.8em;
+    height: 1.55em;
+    padding: 0;
     border-radius: 3px;
-    margin-right: 0.3em;
-    min-width: 2em;
     text-align: center;
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    /* height: 1.5em; 제거 - 패딩으로 자연스럽게 */
     vertical-align: middle;
+    box-sizing: border-box;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Parse percentile 표시 */
+#listings>.listing .members-list .parse,
+#listings>.listing .creator .parse {
+    margin-right: 0.3em;
 }
 
 /* 파티장 이름과 parse 간격 */
@@ -444,6 +499,9 @@
     display: flex;
     align-items: center;
     flex-wrap: nowrap;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
 }
 
 #listings>.listing .creator .parse-dual {
@@ -504,6 +562,81 @@
     background-color: transparent;
     color: var(--meta-text);
     border: 1px dashed var(--meta-text);
+}
+
+/* Parse가 Hidden인 경우 */
+.parse-hidden {
+    background-color: #444444;
+    color: #ffffff;
+    border: 1px solid #666666;
+}
+
+/* FFLogs 매칭이 추정(동명이인 후보 탐색)인 경우 표시 */
+#listings>.listing .members-list .est,
+#listings>.listing .creator .est {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.2em;
+    height: 1.2em;
+    border-radius: 999px;
+    font-weight: 800;
+    font-size: 0.72em;
+    line-height: 1;
+    color: var(--meta-text);
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.16);
+    vertical-align: middle;
+}
+
+#listings>.listing .members-list .est {
+    margin-right: 0.3em;
+}
+
+#listings>.listing .creator .est {
+    margin-left: 0.35em;
+}
+
+/* =============================================================================
+   FFLogs Progress (Boss HP %) 표시
+   ============================================================================= */
+
+/* Progress 표시 */
+#listings>.listing .members-list .prog,
+#listings>.listing .creator .prog {
+    background-color: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    color: var(--text);
+}
+
+/* 파티장 progress는 오른쪽 여백 불필요 (맨 끝이거나 아이콘 앞) */
+#listings>.listing .creator .prog {
+    margin-right: 0;
+    margin-left: 0.35em;
+}
+
+.prog-none {
+    background-color: transparent;
+    color: var(--meta-text);
+    border: 1px dashed var(--meta-text);
+}
+
+.prog-hidden {
+    background-color: #444444;
+    color: #ffffff;
+    border: 1px solid #666666;
+}
+
+.prog-dual {
+    display: inline-flex;
+    gap: 0.2em;
+    flex-shrink: 0;
+    margin-right: 0.3em;
+}
+
+#listings>.listing .creator .prog-dual {
+    margin-right: 0;
+    margin-left: 0.35em;
 }
 
 /* =============================================================================
