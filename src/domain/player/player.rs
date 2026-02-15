@@ -11,6 +11,9 @@ pub struct Player {
     pub name: String,
     /// 홈 서버 ID
     pub home_world: u16,
+    /// 현재 서버 ID (관측 시점, World Visit 포함)
+    #[serde(default)]
+    pub current_world: u16,
     /// 마지막으로 관측된 시각
     #[serde(with = "mongodb::bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub last_seen: DateTime<Utc>,
@@ -32,6 +35,8 @@ pub struct UploadablePlayer {
     pub name: String,
     pub home_world: u16,
     #[serde(default)]
+    pub current_world: u16,
+    #[serde(default)]
     pub account_id: u64,
 }
 
@@ -41,9 +46,14 @@ impl From<UploadablePlayer> for Player {
             content_id: value.content_id,
             name: value.name,
             home_world: value.home_world,
+            current_world: value.current_world,
             last_seen: Utc::now(),
             seen_count: 1,
-            account_id: if value.account_id == 0 { "-1".to_string() } else { value.account_id.to_string() },
+            account_id: if value.account_id == 0 {
+                "-1".to_string()
+            } else {
+                value.account_id.to_string()
+            },
         }
     }
 }

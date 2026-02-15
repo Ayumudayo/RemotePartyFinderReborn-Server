@@ -1,4 +1,4 @@
-use std::{cmp::Ordering, collections::HashMap, convert::Infallible, sync::Arc};
+use std::{cmp::Ordering, collections::{HashMap, HashSet}, convert::Infallible, sync::Arc};
 use warp::Reply;
 use mongodb::bson::doc;
 
@@ -13,44 +13,135 @@ use crate::{
 };
 use super::State;
 
-/// Parse percentile 조회 헬퍼 함수
-/// 
-/// Returns: (p1_percentile, p1_color_class, p2_percentile, p2_color_class)
-fn lookup_parse_percentiles(
+fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer> {
+    let mut world_ids: Vec<u32> = crate::ffxiv::WORLDS.keys().copied().collect();
+    world_ids.sort_unstable();
+
+    let (anchor_dc, anchor_region) = match crate::ffxiv::WORLDS.get(&(anchor_world_id as u32)) {
+        Some(w) => (Some(w.data_center()), crate::fflogs::get_region_from_server(w.as_str())),
+        None => (None, "NA"),
+    };
+
+    let mut out = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+
+    if let Some(dc) = anchor_dc {
+        for wid in &world_ids {
+            let Some(w) = crate::ffxiv::WORLDS.get(wid) else { continue };
+            if w.data_center() != dc {
+                continue;
+            }
+            let server = w.as_str().to_string();
+            if !seen.insert(server.clone()) {
+                continue;
+            }
+            out.push(ParseJobCandidateServer {
+                region: crate::fflogs::get_region_from_server(&server).to_string(),
+                server,
+            });
+        }
+    }
+
+    for wid in &world_ids {
+        let Some(w) = crate::ffxiv::WORLDS.get(wid) else { continue };
+        let server = w.as_str().to_string();
+        let region = crate::fflogs::get_region_from_server(&server);
+        if region != anchor_region {
+            continue;
+        }
+        if !seen.insert(server.clone()) {
+            continue;
+        }
+        out.push(ParseJobCandidateServer {
+            region: region.to_string(),
+            server,
+        });
+    }
+
+    out
+}
+
+/// FFLogs 표시 데이터 조회 헬퍼
+///
+/// - Parse percentile (Best)
+/// - Progress (boss remaining HP %)
+/// - Hidden 처리
+fn lookup_fflogs_displays(
     parse_docs: &HashMap<u64, ParseCacheDoc>,
     content_id: u64,
     zone_key: &str,
     encounter_id: u32,
     secondary_encounter_id: Option<u32>,
-) -> (Option<u8>, String, Option<u8>, String) {
+) -> (
+    crate::template::listings::ParseDisplay,
+    crate::template::listings::ProgressDisplay,
+) {
+    let has_secondary = secondary_encounter_id.is_some();
+    let mut hidden = false;
+    let mut estimated = false;
+
+    // Parse
     let mut p1_percentile = None;
     let mut p1_class = "parse-none".to_string();
     let mut p2_percentile = None;
     let mut p2_class = "parse-none".to_string();
-    
+
+    // Progress (boss remaining HP %)
+    let mut p1_boss = None;
+    let mut p2_boss = None;
+
     if let Some(doc) = parse_docs.get(&content_id) {
         if let Some(zone_cache) = doc.zones.get(zone_key) {
-            // Primary (P1)
-            if let Some(enc_parse) = zone_cache.encounters.get(&encounter_id.to_string()) {
-                if enc_parse.percentile >= 0.0 {
-                    p1_percentile = Some(enc_parse.percentile as u8);
-                    p1_class = crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string();
-                }
+            if zone_cache.estimated {
+                estimated = true;
             }
-            
-            // Secondary (P2)
-            if let Some(sec_id) = secondary_encounter_id {
-                if let Some(enc_parse) = zone_cache.encounters.get(&sec_id.to_string()) {
+            if zone_cache.hidden {
+                hidden = true;
+            } else {
+                // Primary (P1)
+                if let Some(enc_parse) = zone_cache.encounters.get(&encounter_id.to_string()) {
                     if enc_parse.percentile >= 0.0 {
-                        p2_percentile = Some(enc_parse.percentile as u8);
-                        p2_class = crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string();
+                        p1_percentile = Some(enc_parse.percentile as u8);
+                        p1_class = crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string();
+                    }
+                    if let Some(bp) = enc_parse.boss_percentage {
+                        p1_boss = Some(bp.round().clamp(0.0, 100.0) as u8);
+                    }
+                }
+
+                // Secondary (P2)
+                if let Some(sec_id) = secondary_encounter_id {
+                    if let Some(enc_parse) = zone_cache.encounters.get(&sec_id.to_string()) {
+                        if enc_parse.percentile >= 0.0 {
+                            p2_percentile = Some(enc_parse.percentile as u8);
+                            p2_class = crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string();
+                        }
+                        if let Some(bp) = enc_parse.boss_percentage {
+                            p2_boss = Some(bp.round().clamp(0.0, 100.0) as u8);
+                        }
                     }
                 }
             }
         }
     }
-    
-    (p1_percentile, p1_class, p2_percentile, p2_class)
+
+    (
+        crate::template::listings::ParseDisplay::new(
+            p1_percentile,
+            p1_class,
+            p2_percentile,
+            p2_class,
+            has_secondary,
+            hidden,
+            estimated,
+        ),
+        crate::template::listings::ProgressDisplay::new(
+            p1_boss,
+            p2_boss,
+            has_secondary,
+            hidden,
+        ),
+    )
 }
 
 pub async fn listings_handler(
@@ -118,14 +209,15 @@ pub async fn listings_handler(
                     .filter_map(|(i, id)| {
                         let uid = *id as u64;
                         let job_id = jobs.get(i).copied().unwrap_or(0);
-                        let player = players.get(&uid).cloned().unwrap_or(crate::player::Player {
-                            content_id: uid,
-                            name: "Unknown Member".to_string(),
-                            home_world: 0,
-                            last_seen: chrono::Utc::now(),
-                            seen_count: 0,
-                            account_id: "-1".to_string(),
-                        });
+                         let player = players.get(&uid).cloned().unwrap_or(crate::player::Player {
+                             content_id: uid,
+                             name: "Unknown Member".to_string(),
+                             home_world: 0,
+                             current_world: 0,
+                             last_seen: chrono::Utc::now(),
+                             seen_count: 0,
+                             account_id: "-1".to_string(),
+                         });
                         
                         // 잡 정보가 없는 멤버는 표시하지 않음 (Ghost Member 방지)
                         // 리스팅 정보(jobs)와 세부 정보(content_ids) 간의 불일치 시, 리스팅 정보를 신뢰함
@@ -133,42 +225,62 @@ pub async fn listings_handler(
                             return None;
                         }
 
-                        // Parse Data (P1 & P2) - 헬퍼 함수 사용
-                        let (p1_percentile, p1_class, p2_percentile, p2_class) = if zone_id > 0 {
-                            lookup_parse_percentiles(&all_parse_docs, uid, &zone_key, encounter_id, secondary_encounter_id)
+                        let (parse, progress) = if zone_id > 0 {
+                            lookup_fflogs_displays(&all_parse_docs, uid, &zone_key, encounter_id, secondary_encounter_id)
                         } else {
-                            (None, "parse-none".to_string(), None, "parse-none".to_string())
-                        };
+                            (
+                                 crate::template::listings::ParseDisplay::new(
+                                     None,
+                                     "parse-none".to_string(),
+                                     None,
+                                     "parse-none".to_string(),
+                                     false,
+                                     false,
+                                     false,
+                                 ),
+                                 crate::template::listings::ProgressDisplay::new(None, None, false, false),
+                             )
+                         };
 
-                        Some(crate::template::listings::RenderableMember { 
-                            job_id, 
+                        Some(crate::template::listings::RenderableMember {
+                            job_id,
                             player,
-                            parse: crate::template::listings::ParseDisplay::new(
-                                p1_percentile, p1_class,
-                                p2_percentile, p2_class,
-                                secondary_encounter_id.is_some(),
-                            ),
+                            parse,
+                            progress,
                         })
                     })
                     .collect();
                 
                 // 파티장 로그 계산 (leader_content_id 사용) - 헬퍼 함수 사용
                 let leader_content_id = container.listing.leader_content_id;
-                let (leader_p1_percentile, leader_p1_class, leader_p2_percentile, leader_p2_class) = 
-                    if zone_id > 0 && leader_content_id != 0 {
-                        lookup_parse_percentiles(&all_parse_docs, leader_content_id, &zone_key, encounter_id, secondary_encounter_id)
-                    } else {
-                        (None, "parse-none".to_string(), None, "parse-none".to_string())
-                    };
+                let (leader_parse, leader_progress) = if zone_id > 0 && leader_content_id != 0 {
+                    lookup_fflogs_displays(
+                        &all_parse_docs,
+                        leader_content_id,
+                        &zone_key,
+                        encounter_id,
+                        secondary_encounter_id,
+                    )
+                } else {
+                    (
+                         crate::template::listings::ParseDisplay::new(
+                             None,
+                             "parse-none".to_string(),
+                             None,
+                             "parse-none".to_string(),
+                             false,
+                             false,
+                             false,
+                         ),
+                         crate::template::listings::ProgressDisplay::new(None, None, false, false),
+                     )
+                 };
 
                 renderable_containers.push(crate::template::listings::RenderableListing {
                     container,
                     members,
-                    leader_parse: crate::template::listings::ParseDisplay::new(
-                        leader_p1_percentile, leader_p1_class,
-                        leader_p2_percentile, leader_p2_class,
-                        secondary_encounter_id.is_some(),
-                    ),
+                    leader_parse,
+                    leader_progress,
                 });
             }
 
@@ -279,6 +391,7 @@ pub async fn contribute_detail_handler(
             content_id: detail.leader_content_id,
             name: detail.leader_name.clone(),
             home_world: detail.home_world,
+            current_world: 0,
             account_id: 0, // UploadablePlayer는 u64 유지
         };
         let upsert_res = upsert_players(state.players_collection(), &[leader]).await;
@@ -309,15 +422,27 @@ pub async fn contribute_detail_handler(
 }
 
 /// FFLogs 작업 요청 구조체 (Plugin -> Server response)
+#[derive(Debug, serde::Serialize, Clone)]
+pub struct ParseJobCandidateServer {
+    pub server: String,
+    pub region: String,
+}
+
 #[derive(Debug, serde::Serialize)]
 pub struct ParseJob {
     pub content_id: u64,
     pub name: String,
     pub server: String,
     pub region: String,
+    /// home_world를 모를 때 후보 서버(월드) 목록. 있으면 플러그인이 추정 매칭을 시도한다.
+    #[serde(default)]
+    pub candidate_servers: Vec<ParseJobCandidateServer>,
     pub zone_id: u32,
     pub difficulty_id: i32,
     pub partition: i32,
+    pub encounter_id: u32,
+    #[serde(default)]
+    pub secondary_encounter_id: Option<u32>,
 }
 
 /// FFLogs 파싱 결과 구조체 (Plugin -> Server request)
@@ -326,6 +451,16 @@ pub struct ParseResult {
     pub content_id: u64,
     pub zone_id: u32,
     pub encounters: HashMap<i32, f64>,
+    #[serde(default)]
+    pub boss_percentages: HashMap<i32, f64>,
+    #[serde(default)]
+    pub is_hidden: bool,
+    /// 후보 서버(동명이인) 탐색을 통해 추정 매칭된 결과인지 여부
+    #[serde(default)]
+    pub is_estimated: bool,
+    /// 매칭에 사용된 서버(월드) slug
+    #[serde(default)]
+    pub matched_server: Option<String>,
 }
 
 /// 플러그인에게 파싱 작업 할당
@@ -402,21 +537,70 @@ pub async fn contribute_fflogs_jobs_handler(
             Err(_) => continue,
         };
 
+        // 홈월드가 없는 플레이어를 위한 후보 서버 목록(리스트 단위)
+        let listing_anchor_world = [
+            container.listing.current_world,
+            container.listing.created_world,
+            container.listing.home_world,
+        ]
+        .into_iter()
+        .find(|wid| *wid != 0 && crate::ffxiv::WORLDS.get(&(*wid as u32)).is_some())
+        .unwrap_or(0);
+
+        let listing_candidates = if listing_anchor_world != 0 {
+            build_candidate_servers(listing_anchor_world)
+        } else {
+            Vec::new()
+        };
+
         for player in players {
             if jobs.len() >= limit {
                 break;
             }
-            let server = player.home_world_name().to_string();
-            let region = crate::fflogs::get_region_from_server(&server);
+
+            let home_world_known = player.home_world != 0
+                && crate::ffxiv::WORLDS.get(&(player.home_world as u32)).is_some();
+
+            let (server, region, candidate_servers) = if home_world_known {
+                let server = player.home_world_name().to_string();
+                let region = crate::fflogs::get_region_from_server(&server).to_string();
+                (server, region, Vec::new())
+            } else {
+                // 홈월드를 모르면: 현재 월드/리스트(데이터센터)를 앵커로 후보 서버를 구성하고, 플러그인이 추정 매칭을 수행
+                let anchor_world = if player.current_world != 0
+                    && crate::ffxiv::WORLDS.get(&(player.current_world as u32)).is_some()
+                {
+                    player.current_world
+                } else {
+                    listing_anchor_world
+                };
+
+                let candidates = if anchor_world != 0 {
+                    build_candidate_servers(anchor_world)
+                } else {
+                    listing_candidates.clone()
+                };
+
+                if candidates.is_empty() {
+                    continue;
+                }
+
+                let server = candidates[0].server.clone();
+                let region = candidates[0].region.clone();
+                (server, region, candidates)
+            };
             
             jobs.push(ParseJob {
                 content_id: player.content_id as u64,
                 name: player.name,
                 server,
-                region: region.to_string(),
+                region,
+                candidate_servers,
                 zone_id: fflogs_info.zone_id,
                 difficulty_id: fflogs_info.difficulty_id.unwrap_or(0) as i32,
                 partition: crate::fflogs::mapping::FFLOGS_ZONES.get(&fflogs_info.zone_id).map(|z| z.partition).unwrap_or(0) as i32,
+                encounter_id: fflogs_info.encounter_id,
+                secondary_encounter_id: fflogs_info.secondary_encounter_id,
             });
         }
     }
@@ -433,19 +617,46 @@ pub async fn contribute_fflogs_results_handler(
 
     for res in results {
         // ParseResult -> ZoneCache 변환
+        let boss_percentages = res.boss_percentages;
         let mut encounter_map = HashMap::new();
+
         for (enc_id, percentile) in res.encounters {
+            let boss_percentage = boss_percentages
+                .get(&enc_id)
+                .copied()
+                .map(|v| v as f32);
+
             encounter_map.insert(
                 enc_id.to_string(),
                 crate::mongo::EncounterParse {
                     percentile: percentile as f32, // f64 -> f32
-                    job_id: 0, 
-                }
+                    job_id: 0,
+                    boss_percentage,
+                },
+            );
+        }
+
+        // progress-only 데이터가 들어온 경우도 저장
+        for (enc_id, boss_percentage) in boss_percentages {
+            let key = enc_id.to_string();
+            if encounter_map.contains_key(&key) {
+                continue;
+            }
+            encounter_map.insert(
+                key,
+                crate::mongo::EncounterParse {
+                    percentile: -1.0,
+                    job_id: 0,
+                    boss_percentage: Some(boss_percentage as f32),
+                },
             );
         }
 
         let zone_cache = crate::mongo::ZoneCache {
             fetched_at: chrono::Utc::now(),
+            estimated: res.is_estimated,
+            matched_server: res.matched_server.filter(|s| !s.trim().is_empty()),
+            hidden: res.is_hidden,
             encounters: encounter_map,
         };
 

@@ -134,17 +134,40 @@ pub async fn upsert_players(
             continue;
         }
 
+        let current_world = if player.current_world < 1_000 {
+            player.current_world
+        } else {
+            0
+        };
+
         let account_id_val = if player.account_id != 0 {
             player.account_id.to_string()
         } else {
             "-1".to_string()
         };
 
-        let set_doc = doc! {
+        let mut set_doc = doc! {
             "account_id": account_id_val,
             "name": &player.name,
-            "home_world": player.home_world as u32,
             "last_seen": now,
+        };
+
+        // home_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
+        // (NameCache 기반 업로드는 월드를 모를 수 있으므로, 0으로 다운그레이드되는 것을 방지)
+        if player.home_world != 0 {
+            set_doc.insert("home_world", player.home_world as u32);
+        }
+
+        // current_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
+        if current_world != 0 {
+            set_doc.insert("current_world", current_world as u32);
+        }
+
+        let set_on_insert_doc = doc! {
+            "content_id": player.content_id as i64,
+            // 신규 insert 시에는 unknown(0)도 그대로 저장
+            "home_world": player.home_world as u32,
+            "current_world": current_world as u32,
         };
 
         let opts = UpdateOptions::builder().upsert(true).build();
@@ -154,9 +177,7 @@ pub async fn upsert_players(
                 doc! {
                     "$set": set_doc,
                     "$inc": { "seen_count": 1 },
-                    "$setOnInsert": {
-                        "content_id": player.content_id as i64,
-                    },
+                    "$setOnInsert": set_on_insert_doc,
                 },
                 opts,
             )
