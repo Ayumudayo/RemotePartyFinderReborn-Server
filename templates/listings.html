@@ -6,7 +6,7 @@ xivpf - listings
 
 {% block head %}
 <link rel="stylesheet" href="/assets/common.css" />
-<link rel="stylesheet" href="/assets/listings.css?v=19" />
+<link rel="stylesheet" href="/assets/listings.css?v=27" />
 <script defer src="/assets/list.js"></script>
 <script defer src="/assets/translations.js"></script>
 <script defer src="/assets/listings.js?v=6"></script>
@@ -242,6 +242,9 @@ xivpf - listings
                             </svg>
                             {%- endif %}
 
+                            {%- if member.parse.hidden %}
+                            <span class="parse parse-hidden" title="FFLogs: Hidden">HID</span>
+                            {%- else %}
                             {%- if member.parse.has_secondary %}
                             <div class="parse-dual">
                                 {%- match member.parse.primary_percentile %}
@@ -271,11 +274,25 @@ xivpf - listings
                             <span class="parse parse-none" title="No log data">--</span>
                             {%- endmatch %}
                             {%- endif %}
+                            {%- endif %}
 
-                            {{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small>
-                        </li>
-                        {%- endfor %}
-                    </ul>
+                            {%- if member.parse.estimated %}
+                            <span class="est" title="Estimated match (may be wrong)">?</span>
+                            {%- endif %}
+
+                            <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
+
+                            {# Final boss HP%: only show for non-cleared players #}
+                            <span class="member-prog">
+                                {%- match member.progress.final_boss_percentage %}
+                                {%- when Some with (hp) %}
+                                <span class="prog" title="Final Boss HP: {{ hp }}%">{{ hp }}%</span>
+                                {%- when None %}
+                                {%- endmatch %}
+                            </span>
+                         </li>
+                         {%- endfor %}
+                     </ul>
                     {%- endif %}
                 </div>
             </div>
@@ -288,6 +305,9 @@ xivpf - listings
             <div class="right meta">
                 <div class="item creator">
                     <span class="text">{{ listing.name.full_text(lang) }} @ {{ listing.home_world_string() }}</span>
+                    {%- if renderable.leader_parse.hidden %}
+                    <span class="parse parse-hidden" title="FFLogs: Hidden">HID</span>
+                    {%- else %}
                     {%- if renderable.leader_parse.has_secondary %}
                     <div class="parse-dual">
                         {%- match renderable.leader_parse.primary_percentile %}
@@ -316,10 +336,16 @@ xivpf - listings
                     <span class="parse parse-none" title="No log data">--</span>
                     {%- endmatch %}
                     {%- endif %}
-                    <span title="Creator">
-                        <svg class="icon" viewBox="0 0 32 32" aria-hidden="true">
-                            <use href="/assets/icons.svg#user"></use>
-                        </svg>
+                    {%- endif %}
+
+                      {%- if renderable.leader_parse.estimated %}
+                      <span class="est" title="Estimated match (may be wrong)">?</span>
+                      {%- endif %}
+
+                     <span title="Creator">
+                         <svg class="icon" viewBox="0 0 32 32" aria-hidden="true">
+                             <use href="/assets/icons.svg#user"></use>
+                         </svg>
                     </span>
                 </div>
                 <div class="item world">
