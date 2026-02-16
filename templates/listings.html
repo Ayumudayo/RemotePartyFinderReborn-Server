@@ -6,7 +6,7 @@ xivpf - listings
 
 {% block head %}
 <link rel="stylesheet" href="/assets/common.css" />
-<link rel="stylesheet" href="/assets/listings.css?v=33" />
+<link rel="stylesheet" href="/assets/listings.css?v=34" />
 <script defer src="/assets/list.js"></script>
 <script defer src="/assets/translations.js"></script>
 <script defer src="/assets/listings.js?v=6"></script>
@@ -243,7 +243,14 @@ xivpf - listings
                             {%- endif %}
 
                             {%- if member.parse.hidden %}
+                            {%- if member.parse.has_secondary %}
+                            <div class="parse-dual parse-dual-hidden" title="FFLogs: Hidden">
+                                <span class="parse parse-hidden">HID</span>
+                                <span class="parse parse-hidden-spacer" aria-hidden="true">--</span>
+                            </div>
+                            {%- else %}
                             <span class="parse parse-hidden" title="FFLogs: Hidden">HID</span>
+                            {%- endif %}
                             {%- else %}
                             {%- if member.parse.has_secondary %}
                             <div class="parse-dual">
@@ -282,14 +289,6 @@ xivpf - listings
 
                             <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
 
-                            {%- match member.fflogs_character_url() %}
-                            {%- when Some with (fflogs_url) %}
-                            <a class="fflogs-link" href="{{ fflogs_url }}" target="_blank" rel="noopener noreferrer"
-                                aria-label="Open FFLogs profile for {{ member.player.name }}"
-                                title="Open FFLogs character profile">FF</a>
-                            {%- when None %}
-                            {%- endmatch %}
-
                             {# Final boss HP%: only show for non-cleared players #}
                             <span class="member-prog">
                                 {%- match member.progress.final_boss_percentage %}
@@ -298,9 +297,19 @@ xivpf - listings
                                 {%- when None %}
                                 {%- endmatch %}
                             </span>
+
+                            <span class="member-link-slot">
+                                {%- match member.fflogs_character_url() %}
+                                {%- when Some with (fflogs_url) %}
+                                <a class="fflogs-link" href="{{ fflogs_url }}" target="_blank" rel="noopener noreferrer"
+                                    aria-label="Open FFLogs profile for {{ member.player.name }}"
+                                    title="Open FFLogs character profile">FF</a>
+                                {%- when None %}
+                                {%- endmatch %}
+                            </span>
                          </li>
                          {%- endfor %}
-                     </ul>
+                      </ul>
                     {%- endif %}
                 </div>
             </div>

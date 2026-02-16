@@ -410,6 +410,13 @@ body > div.container {
 }
 
 /* 외부 FFLogs 프로필 링크(이름/월드가 확실할 때만 표시) */
+#listings>.listing .members-list li .member-link-slot {
+    flex: 0 0 auto;
+    width: 2.1em;
+    display: inline-flex;
+    justify-content: flex-end;
+}
+
 #listings>.listing .members-list li .fflogs-link {
     flex: 0 0 auto;
     display: inline-flex;
@@ -615,6 +622,15 @@ body > div.container {
     background-color: #444444;
     color: #ffffff;
     border: 1px solid #666666;
+}
+
+/* Hidden + dual parse 정렬용 스페이서 */
+.parse-hidden-spacer {
+    color: transparent;
+    border: 1px solid transparent;
+    background-color: transparent;
+    user-select: none;
+    pointer-events: none;
 }
 
 /* FFLogs 매칭이 추정(동명이인 후보 탐색)인 경우 표시 */
