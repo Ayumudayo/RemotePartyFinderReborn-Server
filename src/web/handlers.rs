@@ -8,6 +8,7 @@ use crate::listing::PartyFinderListing;
 
 use crate::mongo::{get_current_listings, insert_listing, upsert_players, get_players_by_content_ids, get_parse_docs, ParseCacheDoc};
 use crate::player::UploadablePlayer;
+use crate::sestring_ext::SeStringExt;
 use crate::{
     ffxiv::Language,
     template::listings::ListingsTemplate,
@@ -227,15 +228,38 @@ pub async fn listings_handler(
                     .filter_map(|(i, id)| {
                         let uid = *id as u64;
                         let job_id = jobs.get(i).copied().unwrap_or(0);
-                         let player = players.get(&uid).cloned().unwrap_or(crate::player::Player {
-                             content_id: uid,
-                             name: "Unknown Member".to_string(),
-                             home_world: 0,
-                             current_world: 0,
-                             last_seen: chrono::Utc::now(),
-                             seen_count: 0,
-                             account_id: "-1".to_string(),
-                         });
+                        let is_leader_member = uid == container.listing.leader_content_id || i == 0;
+
+                        let player = players.get(&uid).cloned().unwrap_or_else(|| {
+                            if is_leader_member {
+                                let leader_name = container.listing.name.full_text(&lang);
+                                let leader_name = if leader_name.trim().is_empty() {
+                                    "Party Leader".to_string()
+                                } else {
+                                    leader_name
+                                };
+
+                                crate::player::Player {
+                                    content_id: uid,
+                                    name: leader_name,
+                                    home_world: container.listing.home_world,
+                                    current_world: container.listing.current_world,
+                                    last_seen: chrono::Utc::now(),
+                                    seen_count: 0,
+                                    account_id: "-1".to_string(),
+                                }
+                            } else {
+                                crate::player::Player {
+                                    content_id: uid,
+                                    name: "Unknown Member".to_string(),
+                                    home_world: 0,
+                                    current_world: 0,
+                                    last_seen: chrono::Utc::now(),
+                                    seen_count: 0,
+                                    account_id: "-1".to_string(),
+                                }
+                            }
+                        });
                         
                         // 잡 정보가 없는 멤버는 표시하지 않음 (Ghost Member 방지)
                         // 리스팅 정보(jobs)와 세부 정보(content_ids) 간의 불일치 시, 리스팅 정보를 신뢰함
