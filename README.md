@@ -1,4 +1,4 @@
-# Remote Party Finder Reborn - Server
+# Report Partry Finder Reborn - Server
 
 A Rust backend server that aggregates Party Finder listings, integrates with FFLogs, and serves a modern web interface.
 
