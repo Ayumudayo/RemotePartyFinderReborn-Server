@@ -1,6 +1,3 @@
-#![feature(try_blocks, iter_intersperse)]
-
-
 use crate::config::Config;
 use anyhow::Context;
 use std::borrow::Cow;

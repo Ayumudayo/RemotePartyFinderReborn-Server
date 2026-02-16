@@ -1,6 +1,6 @@
 # Use a multi-stage build to keep the final image small
-# 1. Builder stage (Use Nightly as required by codebase)
-FROM rustlang/rust:nightly-bookworm as builder
+# 1. Builder stage (stable toolchain)
+FROM rustlang/rust:stable-bookworm as builder
 
 WORKDIR /usr/src/app
 
