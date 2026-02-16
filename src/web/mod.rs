@@ -1,4 +1,11 @@
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::AtomicU64,
+    },
+    time::Duration,
+};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use mongodb::{
@@ -39,6 +46,14 @@ pub struct State {
     pub player_upsert_concurrency: usize,
     /// in-flight FFLogs job lease map to avoid duplicate dispatch across workers
     pub fflogs_job_leases: RwLock<HashMap<FflogsLeaseKey, DateTime<Utc>>>,
+    /// total number of FFLogs jobs dispatched to workers
+    pub fflogs_jobs_dispatched_total: AtomicU64,
+    /// total number of FFLogs result payload items received from workers
+    pub fflogs_results_received_total: AtomicU64,
+    /// total hidden-cache refresh candidates detected during jobs allocation
+    pub fflogs_hidden_refresh_total: AtomicU64,
+    /// total leader fallback applications when rendering listings
+    pub fflogs_leader_fallback_total: AtomicU64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -65,6 +80,10 @@ impl State {
             listing_upsert_concurrency: config.web.listing_upsert_concurrency.max(1),
             player_upsert_concurrency: config.web.player_upsert_concurrency.max(1),
             fflogs_job_leases: Default::default(),
+            fflogs_jobs_dispatched_total: Default::default(),
+            fflogs_results_received_total: Default::default(),
+            fflogs_hidden_refresh_total: Default::default(),
+            fflogs_leader_fallback_total: Default::default(),
         });
 
         // Initialize Indexes

@@ -1,4 +1,12 @@
-use std::{cmp::Ordering, collections::{HashMap, HashSet}, convert::Infallible, sync::Arc};
+use std::{
+    cmp::Ordering as CmpOrdering,
+    collections::{HashMap, HashSet},
+    convert::Infallible,
+    sync::{
+        Arc,
+        atomic::Ordering as AtomicOrdering,
+    },
+};
 use warp::Reply;
 use futures_util::StreamExt;
 use mongodb::{bson::doc, options::UpdateOptions};
@@ -213,7 +221,7 @@ pub async fn listings_handler(
             containers.sort_by(|a, b| {
                 b.updated_minute.cmp(&a.updated_minute)
                     .then_with(|| b.listing.pf_category().cmp(&a.listing.pf_category()))
-                    .then_with(|| a.time_left.partial_cmp(&b.time_left).unwrap_or(Ordering::Equal))
+                    .then_with(|| a.time_left.partial_cmp(&b.time_left).unwrap_or(CmpOrdering::Equal))
             });
 
             // Collect all member IDs + leader IDs
@@ -378,9 +386,16 @@ pub async fn listings_handler(
             }
 
             if leader_fallback_total > 0 {
+                let batch_fallback_hits = leader_fallback_total as u64;
+                let total_fallback_hits = state
+                    .fflogs_leader_fallback_total
+                    .fetch_add(batch_fallback_hits, AtomicOrdering::Relaxed)
+                    + batch_fallback_hits;
+
                 tracing::info!(
                     listing_count = leader_fallback_listing_count,
                     fallback_hits = leader_fallback_total,
+                    cumulative_fallback_hits = total_fallback_hits,
                     "members: leader metadata fallback used in listings response",
                 );
             }
@@ -640,6 +655,7 @@ pub async fn contribute_fflogs_jobs_handler(
     };
 
     let mut jobs = Vec::new();
+    let mut hidden_refresh_candidates_in_batch = 0u64;
     let limit = state.fflogs_jobs_limit; // 한 번에 할당할 작업 수
 
     // Zone별 플레이어 수집, background.rs 로직 재사용
@@ -691,13 +707,19 @@ pub async fn contribute_fflogs_jobs_handler(
         // 작업이 필요한 멤버 식별
         let mut needing_fetch = Vec::new();
         for id in member_ids {
-            let needed = match cached_zones.get(&id) {
-                Some(cache) => crate::mongo::is_zone_cache_expired_with_hidden_ttl_hours(
-                    cache,
-                    state.fflogs_hidden_cache_ttl_hours,
-                ),
-                None => true,
+            let (needed, hidden_refresh_due) = match cached_zones.get(&id) {
+                Some(cache) => {
+                    let needed = crate::mongo::is_zone_cache_expired_with_hidden_ttl_hours(
+                        cache,
+                        state.fflogs_hidden_cache_ttl_hours,
+                    );
+                    (needed, cache.hidden && needed)
+                }
+                None => (true, false),
             };
+            if hidden_refresh_due {
+                hidden_refresh_candidates_in_batch += 1;
+            }
             if needed {
                 needing_fetch.push(id);
             }
@@ -817,6 +839,33 @@ pub async fn contribute_fflogs_jobs_handler(
         });
     }
 
+    let dispatched_in_batch = jobs.len() as u64;
+    if dispatched_in_batch > 0 {
+        let dispatched_total = state
+            .fflogs_jobs_dispatched_total
+            .fetch_add(dispatched_in_batch, AtomicOrdering::Relaxed)
+            + dispatched_in_batch;
+
+        tracing::debug!(
+            batch_jobs = dispatched_in_batch,
+            total_jobs_dispatched = dispatched_total,
+            "fflogs jobs dispatched",
+        );
+    }
+
+    if hidden_refresh_candidates_in_batch > 0 {
+        let hidden_refresh_total = state
+            .fflogs_hidden_refresh_total
+            .fetch_add(hidden_refresh_candidates_in_batch, AtomicOrdering::Relaxed)
+            + hidden_refresh_candidates_in_batch;
+
+        tracing::debug!(
+            hidden_refresh_candidates_in_batch,
+            hidden_refresh_total,
+            "fflogs hidden cache refresh candidates detected",
+        );
+    }
+
     Ok(warp::reply::json(&jobs))
 }
 
@@ -825,6 +874,7 @@ pub async fn contribute_fflogs_results_handler(
     state: Arc<State>,
     results: Vec<ParseResult>,
 ) -> std::result::Result<impl Reply, Infallible> {
+    let results_in_batch = results.len() as u64;
     let mut success_count = 0;
 
     let lease_keys: Vec<super::FflogsLeaseKey> = results
@@ -901,6 +951,20 @@ pub async fn contribute_fflogs_results_handler(
         for key in lease_keys {
             leases.remove(&key);
         }
+    }
+
+    if results_in_batch > 0 {
+        let results_total = state
+            .fflogs_results_received_total
+            .fetch_add(results_in_batch, AtomicOrdering::Relaxed)
+            + results_in_batch;
+
+        tracing::debug!(
+            results_in_batch,
+            success_count,
+            results_total,
+            "fflogs results processed",
+        );
     }
 
     Ok(warp::reply::json(&format!("Updated {} records", success_count)))
