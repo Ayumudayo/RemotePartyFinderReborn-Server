@@ -46,6 +46,21 @@ The server is built with:
     url = "mongodb://localhost:27017/remote-party-finder"
     ```
 
+### Recommended Presets
+
+Tune these four values together based on server capacity and contributor count:
+
+| Preset | `fflogs_jobs_limit` | `fflogs_hidden_cache_ttl_hours` | `listing_upsert_concurrency` | `player_upsert_concurrency` |
+| --- | ---: | ---: | ---: | ---: |
+| Low-load / single-node | 10 | 24 | 8 | 16 |
+| Balanced (default) | 20 | 24 | 16 | 32 |
+| High-throughput | 30 | 12 | 24 | 48 |
+
+- Higher `fflogs_jobs_limit` increases refresh speed but raises FFLogs/API pressure.
+- Lower `fflogs_hidden_cache_ttl_hours` re-checks hidden characters sooner but increases query volume.
+- Increase upsert concurrency only if MongoDB has headroom; otherwise keep defaults.
+- Restart the server after editing `config.toml`.
+
 ### Running the Server
 
 ```bash
@@ -70,7 +85,7 @@ CARGO_INCREMENTAL=0 cargo +stable test resolve_member_player
 
 ### Docker
 
-`Dockerfile` uses a stable Rust builder image (`rustlang/rust:stable-bookworm`).
+`Dockerfile` uses a stable Rust builder image (`rust:bookworm`).
 
 ## License
 
