@@ -28,3 +28,5 @@ Claude.md
 /.idea
 /config.toml
 logs/
+nul
+rustc-ice-*.txt
