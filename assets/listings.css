@@ -369,11 +369,25 @@ body > div.container {
 }
 
 #listings>.listing .members-list li {
-    margin-bottom: 0.1em;
+    margin-bottom: 0;
+    padding: 0.1em 0.16em;
+    border-radius: 3px;
     display: flex;
     align-items: center;
     gap: 0.3em;
     flex-wrap: nowrap;
+    transition: background-color 0.12s ease;
+}
+
+/* 멤버 행 구분선: 버튼-행 매칭 혼동 완화 */
+#listings>.listing .members-list li+li {
+    border-top: 2.25px solid rgba(255, 255, 255, 0.11);
+    margin-top: 0;
+    padding-top: 0.2em;
+}
+
+#listings>.listing .members-list li:hover {
+    background-color: rgba(255, 255, 255, 0.04);
 }
 
 /* Pico는 small을 block/100%로 잡아 줄바꿈이 발생할 수 있음 */
@@ -393,6 +407,38 @@ body > div.container {
     text-overflow: ellipsis;
     /* 이름이 짧을 때 progress가 너무 멀어지지 않도록, 성장 폭을 제한 */
     max-width: clamp(18ch, 42vw, 32ch);
+}
+
+/* 외부 FFLogs 프로필 링크(이름/월드가 확실할 때만 표시) */
+#listings>.listing .members-list li .fflogs-link {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.1em;
+    height: 1.55em;
+    padding: 0 0.45em;
+    border-radius: 3px;
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    background-color: rgba(255, 255, 255, 0.06);
+    color: var(--meta-text);
+    text-decoration: none;
+    font-weight: 700;
+    font-size: 0.68em;
+    line-height: 1;
+    opacity: 0.74;
+    transition: opacity 0.12s ease, background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+
+#listings>.listing .members-list li .fflogs-link:hover {
+    opacity: 1;
+    color: var(--text);
+    border-color: rgba(255, 255, 255, 0.35);
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+#listings>.listing .members-list li .fflogs-link:focus-visible {
+    opacity: 1;
 }
 
 /* 최종 보스 HP% 전용 컬럼(미클리어자만 표시). 빈 경우에도 폭은 유지 */

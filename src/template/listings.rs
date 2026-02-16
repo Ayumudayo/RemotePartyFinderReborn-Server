@@ -6,6 +6,32 @@ use crate::sestring_ext::SeStringExt;
 use askama::Template;
 use std::borrow::Borrow;
 
+fn is_known_member_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    !trimmed.is_empty()
+        && !trimmed.eq_ignore_ascii_case("Unknown Member")
+        && !trimmed.eq_ignore_ascii_case("Party Leader")
+}
+
+fn encode_fflogs_path_segment(input: &str) -> String {
+    const HEX: &[u8; 16] = b"0123456789ABCDEF";
+
+    let mut out = String::with_capacity(input.len());
+    for b in input.as_bytes() {
+        let b = *b;
+        let is_unreserved = b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b'~');
+        if is_unreserved {
+            out.push(char::from(b));
+        } else {
+            out.push('%');
+            out.push(char::from(HEX[(b >> 4) as usize]));
+            out.push(char::from(HEX[(b & 0x0F) as usize]));
+        }
+    }
+
+    out
+}
+
 #[derive(Debug, Template)]
 #[template(path = "listings.html")]
 pub struct ListingsTemplate {
@@ -117,6 +143,74 @@ impl RenderableMember {
         } else {
             ""
         }
+    }
+
+    pub fn fflogs_character_url(&self) -> Option<String> {
+        let name = self.player.name.trim();
+        if !is_known_member_name(name) {
+            return None;
+        }
+
+        let world = crate::ffxiv::WORLDS.get(&(self.player.home_world as u32))?;
+        let server = world.as_str();
+        let region = crate::fflogs::get_region_from_server(server).to_ascii_lowercase();
+
+        Some(format!(
+            "https://www.fflogs.com/character/{}/{}/{}",
+            region,
+            encode_fflogs_path_segment(server),
+            encode_fflogs_path_segment(name),
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{encode_fflogs_path_segment, RenderableMember};
+    use chrono::Utc;
+
+    fn sample_member(name: &str, home_world: u16) -> RenderableMember {
+        RenderableMember {
+            job_id: 19,
+            player: crate::player::Player {
+                content_id: 1,
+                name: name.to_string(),
+                home_world,
+                current_world: home_world,
+                last_seen: Utc::now(),
+                seen_count: 1,
+                account_id: "-1".to_string(),
+            },
+            parse: Default::default(),
+            progress: Default::default(),
+        }
+    }
+
+    #[test]
+    fn encode_fflogs_path_segment_percent_encodes_spaces_and_symbols() {
+        assert_eq!(encode_fflogs_path_segment("Karen Fukada"), "Karen%20Fukada");
+        assert_eq!(encode_fflogs_path_segment("A'zuki"), "A%27zuki");
+    }
+
+    #[test]
+    fn member_link_is_generated_for_known_name_and_world() {
+        // 73 = Masamune (known JP world)
+        let member = sample_member("Sayo Shijima", 73);
+        let link = member
+            .fflogs_character_url()
+            .expect("expected FFLogs profile link for known member");
+
+        assert!(link.starts_with("https://www.fflogs.com/character/"));
+        assert!(link.ends_with("/Sayo%20Shijima"));
+    }
+
+    #[test]
+    fn member_link_is_not_generated_for_unknown_or_placeholder_names() {
+        let unknown = sample_member("Unknown Member", 73);
+        assert!(unknown.fflogs_character_url().is_none());
+
+        let placeholder = sample_member("Party Leader", 73);
+        assert!(placeholder.fflogs_character_url().is_none());
     }
 }
 
