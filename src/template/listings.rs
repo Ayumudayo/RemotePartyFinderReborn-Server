@@ -19,8 +19,6 @@ pub struct RenderableListing {
     pub members: Vec<RenderableMember>,
     /// 파티장 로그 정보 (멤버 정보가 없어도 표시 가능)
     pub leader_parse: ParseDisplay,
-    /// 파티장 진행도(보스 남은 체력 %) 정보
-    pub leader_progress: ProgressDisplay,
 }
 
 /// Parse percentile 표시 정보
@@ -63,11 +61,6 @@ impl ParseDisplay {
 /// 진행도(보스 남은 체력 %) 표시 정보
 #[derive(Debug, Clone, Default)]
 pub struct ProgressDisplay {
-    pub primary_boss_percentage: Option<u8>,
-    pub secondary_boss_percentage: Option<u8>,
-    pub has_secondary: bool,
-    /// FFLogs에서 Hidden 처리된 캐릭터인지 여부
-    pub hidden: bool,
     /// 최종 보스 HP% (미클리어자만 표시; 클리어자는 None)
     pub final_boss_percentage: Option<u8>,
 }
@@ -89,10 +82,6 @@ impl ProgressDisplay {
         };
 
         Self {
-            primary_boss_percentage: p1,
-            secondary_boss_percentage: p2,
-            has_secondary,
-            hidden,
             final_boss_percentage,
         }
     }

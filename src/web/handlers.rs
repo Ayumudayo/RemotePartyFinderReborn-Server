@@ -1,6 +1,8 @@
 use std::{cmp::Ordering, collections::{HashMap, HashSet}, convert::Infallible, sync::Arc};
 use warp::Reply;
-use mongodb::bson::doc;
+use futures_util::StreamExt;
+use mongodb::{bson::doc, options::UpdateOptions};
+use chrono::{TimeDelta, Utc};
 
 use crate::listing::PartyFinderListing;
 
@@ -70,6 +72,7 @@ fn lookup_fflogs_displays(
     parse_docs: &HashMap<u64, ParseCacheDoc>,
     content_id: u64,
     zone_key: &str,
+    legacy_zone_key: Option<&str>,
     encounter_id: u32,
     secondary_encounter_id: Option<u32>,
 ) -> (
@@ -91,7 +94,12 @@ fn lookup_fflogs_displays(
     let mut p2_boss = None;
 
     if let Some(doc) = parse_docs.get(&content_id) {
-        if let Some(zone_cache) = doc.zones.get(zone_key) {
+        let zone_cache = doc
+            .zones
+            .get(zone_key)
+            .or_else(|| legacy_zone_key.and_then(|k| doc.zones.get(k)));
+
+        if let Some(zone_cache) = zone_cache {
             if zone_cache.estimated {
                 estimated = true;
             }
@@ -192,16 +200,26 @@ pub async fn listings_handler(
                     None
                 };
                 
-                let (zone_id, encounter_id, secondary_encounter_id) = if let Some(info) = fflogs_info {
-                    (info.zone_id, info.encounter_id, info.secondary_encounter_id)
+                let (zone_id, difficulty_id, partition, encounter_id, secondary_encounter_id) = if let Some(info) = fflogs_info {
+                    (
+                        info.zone_id,
+                        info.difficulty_id.unwrap_or(0) as i32,
+                        crate::fflogs::mapping::FFLOGS_ZONES
+                            .get(&info.zone_id)
+                            .map(|z| z.partition)
+                            .unwrap_or(0) as i32,
+                        info.encounter_id,
+                        info.secondary_encounter_id,
+                    )
                 } else {
-                    (0, 0, None)
+                    (0, 0, 0, 0, None)
                 };
 
                 let jobs = &container.listing.jobs_present;
                 let content_ids = &container.listing.member_content_ids;
                 
-                let zone_key = zone_id.to_string();
+                let zone_key = crate::fflogs::make_zone_cache_key(zone_id, difficulty_id, partition);
+                let legacy_zone_key = zone_id.to_string();
 
                 let members: Vec<crate::template::listings::RenderableMember> = content_ids.iter()
                     .enumerate()
@@ -226,7 +244,14 @@ pub async fn listings_handler(
                         }
 
                         let (parse, progress) = if zone_id > 0 {
-                            lookup_fflogs_displays(&all_parse_docs, uid, &zone_key, encounter_id, secondary_encounter_id)
+                            lookup_fflogs_displays(
+                                &all_parse_docs,
+                                uid,
+                                &zone_key,
+                                Some(&legacy_zone_key),
+                                encounter_id,
+                                secondary_encounter_id,
+                            )
                         } else {
                             (
                                  crate::template::listings::ParseDisplay::new(
@@ -253,11 +278,12 @@ pub async fn listings_handler(
                 
                 // 파티장 로그 계산 (leader_content_id 사용) - 헬퍼 함수 사용
                 let leader_content_id = container.listing.leader_content_id;
-                let (leader_parse, leader_progress) = if zone_id > 0 && leader_content_id != 0 {
+                let (leader_parse, _) = if zone_id > 0 && leader_content_id != 0 {
                     lookup_fflogs_displays(
                         &all_parse_docs,
                         leader_content_id,
                         &zone_key,
+                        Some(&legacy_zone_key),
                         encounter_id,
                         secondary_encounter_id,
                     )
@@ -280,7 +306,6 @@ pub async fn listings_handler(
                     container,
                     members,
                     leader_parse,
-                    leader_progress,
                 });
             }
 
@@ -338,16 +363,67 @@ pub async fn contribute_multiple_handler(
     let total = listings.len();
     let mut successful = 0;
 
+    let mut write_ops = Vec::new();
     for listing in &listings {
         if listing.seconds_remaining > 60 * 60 {
             continue;
         }
 
-        let result = insert_listing(state.collection(), listing).await;
-        if result.is_ok() {
-            successful += 1;
-        } else {
-            tracing::warn!("Failed to insert listing: {:#?}", result);
+        if listing.created_world >= 1_000
+            || listing.home_world >= 1_000
+            || listing.current_world >= 1_000
+        {
+            continue;
+        }
+
+        let bson_value = match mongodb::bson::to_bson(listing) {
+            Ok(v) => v,
+            Err(e) => {
+                tracing::warn!("Failed to serialize listing {}: {:#?}", listing.id, e);
+                continue;
+            }
+        };
+
+        let filter = doc! {
+            "listing.id": listing.id,
+            "listing.last_server_restart": listing.last_server_restart,
+            "listing.created_world": listing.created_world as u32,
+        };
+        let update = doc! {
+            "$currentDate": {
+                "updated_at": true,
+            },
+            "$set": {
+                "listing": bson_value,
+            },
+            "$setOnInsert": {
+                "created_at": Utc::now(),
+            },
+        };
+        write_ops.push((listing.id, filter, update));
+    }
+
+    let mut writes = futures_util::stream::iter(
+        write_ops
+            .into_iter()
+            .map(|(listing_id, filter, update)| {
+                let collection = state.collection();
+                async move {
+                    collection
+                        .update_one(filter, update, UpdateOptions::builder().upsert(true).build())
+                        .await
+                        .map_err(|e| (listing_id, e))
+                }
+            }),
+    )
+    .buffer_unordered(state.listing_upsert_concurrency);
+
+    while let Some(result) = writes.next().await {
+        match result {
+            Ok(_) => successful += 1,
+            Err((listing_id, e)) => {
+                tracing::warn!("Failed to insert listing {}: {:#?}", listing_id, e);
+            }
         }
     }
 
@@ -360,7 +436,12 @@ pub async fn contribute_players_handler(
     players: Vec<UploadablePlayer>,
 ) -> std::result::Result<impl Reply, Infallible> {
     let total = players.len();
-    let result = upsert_players(state.players_collection(), &players).await;
+    let result = upsert_players(
+        state.players_collection(),
+        &players,
+        state.player_upsert_concurrency,
+    )
+    .await;
 
     match result {
         Ok(successful) => Ok(format!("{}/{} players updated", successful, total)),
@@ -394,7 +475,12 @@ pub async fn contribute_detail_handler(
             current_world: 0,
             account_id: 0, // UploadablePlayer는 u64 유지
         };
-        let upsert_res = upsert_players(state.players_collection(), &[leader]).await;
+        let upsert_res = upsert_players(
+            state.players_collection(),
+            &[leader],
+            state.player_upsert_concurrency,
+        )
+        .await;
         tracing::debug!("Upserted leader {}: {:?}", detail.leader_content_id, upsert_res);
     } else {
         tracing::debug!("Skipping leader upsert: ID={} Name='{}' World={}", detail.leader_content_id, detail.leader_name, detail.home_world);
@@ -450,6 +536,10 @@ pub struct ParseJob {
 pub struct ParseResult {
     pub content_id: u64,
     pub zone_id: u32,
+    #[serde(default)]
+    pub difficulty_id: i32,
+    #[serde(default)]
+    pub partition: i32,
     pub encounters: HashMap<i32, f64>,
     #[serde(default)]
     pub boss_percentages: HashMap<i32, f64>,
@@ -474,7 +564,7 @@ pub async fn contribute_fflogs_jobs_handler(
     };
 
     let mut jobs = Vec::new();
-    let limit = 20; // 한 번에 할당할 작업 수
+    let limit = state.fflogs_jobs_limit; // 한 번에 할당할 작업 수
 
     // Zone별 플레이어 수집, background.rs 로직 재사용
     // 여기서는 간단하게 순회하며 필요한 작업 찾으면 바로 반환 (Greedy)
@@ -496,6 +586,13 @@ pub async fn contribute_fflogs_jobs_handler(
             None => continue,
         };
 
+        let difficulty_id = fflogs_info.difficulty_id.unwrap_or(0) as i32;
+        let partition = crate::fflogs::mapping::FFLOGS_ZONES
+            .get(&fflogs_info.zone_id)
+            .map(|z| z.partition)
+            .unwrap_or(0) as i32;
+        let zone_key = crate::fflogs::make_zone_cache_key(fflogs_info.zone_id, difficulty_id, partition);
+
         let member_ids: Vec<u64> = container.listing.member_content_ids.iter()
             .map(|&id| id as u64)
             .filter(|&id| id != 0)
@@ -509,7 +606,7 @@ pub async fn contribute_fflogs_jobs_handler(
         let cached_zones = match crate::mongo::get_zone_caches(
             state.parse_collection(),
             &member_ids,
-            fflogs_info.zone_id
+            &zone_key,
         ).await {
             Ok(map) => map,
             Err(_) => continue,
@@ -519,7 +616,10 @@ pub async fn contribute_fflogs_jobs_handler(
         let mut needing_fetch = Vec::new();
         for id in member_ids {
             let needed = match cached_zones.get(&id) {
-                Some(cache) => crate::mongo::is_zone_cache_expired(cache),
+                Some(cache) => crate::mongo::is_zone_cache_expired_with_hidden_ttl_hours(
+                    cache,
+                    state.fflogs_hidden_cache_ttl_hours,
+                ),
                 None => true,
             };
             if needed {
@@ -597,12 +697,48 @@ pub async fn contribute_fflogs_jobs_handler(
                 region,
                 candidate_servers,
                 zone_id: fflogs_info.zone_id,
-                difficulty_id: fflogs_info.difficulty_id.unwrap_or(0) as i32,
-                partition: crate::fflogs::mapping::FFLOGS_ZONES.get(&fflogs_info.zone_id).map(|z| z.partition).unwrap_or(0) as i32,
+                difficulty_id,
+                partition,
                 encounter_id: fflogs_info.encounter_id,
                 secondary_encounter_id: fflogs_info.secondary_encounter_id,
             });
         }
+    }
+
+    // lease selected jobs to avoid duplicate dispatch across concurrent workers
+    let Some(lease_ttl) = TimeDelta::try_minutes(3) else {
+        return Ok(warp::reply::json(&Vec::<ParseJob>::new()));
+    };
+    let now = Utc::now();
+
+    {
+        let mut leases = state.fflogs_job_leases.write().await;
+
+        // cleanup expired leases (worker crash / timeout safety)
+        leases.retain(|_, leased_at| (*leased_at + lease_ttl) > now);
+
+        let mut seen: HashSet<super::FflogsLeaseKey> = HashSet::new();
+        jobs.retain(|job| {
+            let key = super::FflogsLeaseKey {
+                content_id: job.content_id,
+                zone_id: job.zone_id,
+                difficulty_id: job.difficulty_id,
+                partition: job.partition,
+            };
+
+            // de-dup within this response payload
+            if !seen.insert(key.clone()) {
+                return false;
+            }
+
+            // skip if another worker already leased this key
+            if leases.contains_key(&key) {
+                return false;
+            }
+
+            leases.insert(key, now);
+            true
+        });
     }
 
     Ok(warp::reply::json(&jobs))
@@ -614,6 +750,16 @@ pub async fn contribute_fflogs_results_handler(
     results: Vec<ParseResult>,
 ) -> std::result::Result<impl Reply, Infallible> {
     let mut success_count = 0;
+
+    let lease_keys: Vec<super::FflogsLeaseKey> = results
+        .iter()
+        .map(|r| super::FflogsLeaseKey {
+            content_id: r.content_id,
+            zone_id: r.zone_id,
+            difficulty_id: r.difficulty_id,
+            partition: r.partition,
+        })
+        .collect();
 
     for res in results {
         // ParseResult -> ZoneCache 변환
@@ -660,14 +806,24 @@ pub async fn contribute_fflogs_results_handler(
             encounters: encounter_map,
         };
 
+        let zone_key = crate::fflogs::make_zone_cache_key(res.zone_id, res.difficulty_id, res.partition);
+
         // DB Upsert
         if let Ok(_) = crate::mongo::upsert_zone_cache(
             state.parse_collection(),
             res.content_id,
-            res.zone_id,
+            &zone_key,
             &zone_cache
         ).await {
             success_count += 1;
+        }
+    }
+
+    // release leases for returned results (success/failure both) so next polling can retry quickly
+    {
+        let mut leases = state.fflogs_job_leases.write().await;
+        for key in lease_keys {
+            leases.remove(&key);
         }
     }
 

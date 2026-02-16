@@ -6,30 +6,100 @@
 pub fn get_region_from_server(server: &str) -> &'static str {
     // JP (Elemental, Gaia, Mana, Meteor)
     let jp_servers = [
-        "Aegis", "Atomos", "Carbuncle", "Garuda", "Gungnir", "Kujata", "Tonberry", "Typhon",
-        "Alexander", "Bahamut", "Durandal", "Fenrir", "Ifrit", "Ridill", "Tiamat", "Ultima",
-        "Anima", "Asura", "Chocobo", "Hades", "Ixion", "Masamune", "Pandaemonium", "Titan",
-        "Belias", "Mandragora", "Ramuh", "Shinryu", "Unicorn", "Valefor", "Yojimbo", "Zeromus"
+        "Aegis",
+        "Atomos",
+        "Carbuncle",
+        "Garuda",
+        "Gungnir",
+        "Kujata",
+        "Tonberry",
+        "Typhon",
+        "Alexander",
+        "Bahamut",
+        "Durandal",
+        "Fenrir",
+        "Ifrit",
+        "Ridill",
+        "Tiamat",
+        "Ultima",
+        "Anima",
+        "Asura",
+        "Chocobo",
+        "Hades",
+        "Ixion",
+        "Masamune",
+        "Pandaemonium",
+        "Titan",
+        "Belias",
+        "Mandragora",
+        "Ramuh",
+        "Shinryu",
+        "Unicorn",
+        "Valefor",
+        "Yojimbo",
+        "Zeromus",
     ];
 
     // NA (Aether, Primal, Crystal, Dynamis)
     let na_servers = [
         // Aether
-        "Adamantoise", "Cactuar", "Faerie", "Gilgamesh", "Jenova", "Midgardsormr", "Sargatanas", "Siren",
+        "Adamantoise",
+        "Cactuar",
+        "Faerie",
+        "Gilgamesh",
+        "Jenova",
+        "Midgardsormr",
+        "Sargatanas",
+        "Siren",
         // Primal
-        "Behemoth", "Excalibur", "Exodus", "Famfrit", "Hyperion", "Lamia", "Leviathan", "Ultros",
+        "Behemoth",
+        "Excalibur",
+        "Exodus",
+        "Famfrit",
+        "Hyperion",
+        "Lamia",
+        "Leviathan",
+        "Ultros",
         // Crystal
-        "Balmung", "Brynhildr", "Coeurl", "Diabolos", "Goblin", "Malboro", "Mateus", "Zalera",
+        "Balmung",
+        "Brynhildr",
+        "Coeurl",
+        "Diabolos",
+        "Goblin",
+        "Malboro",
+        "Mateus",
+        "Zalera",
         // Dynamis
-        "Halicarnassus", "Maduin", "Marilith", "Seraph", "Cuchulainn", "Golem", "Kraken", "Rafflesia",
+        "Halicarnassus",
+        "Maduin",
+        "Marilith",
+        "Seraph",
+        "Cuchulainn",
+        "Golem",
+        "Kraken",
+        "Rafflesia",
     ];
 
     // EU (Chaos, Light)
     let eu_servers = [
         // Chaos
-        "Cerberus", "Louisoix", "Moogle", "Omega", "Phantom", "Ragnarok", "Sagittarius", "Spriggan",
+        "Cerberus",
+        "Louisoix",
+        "Moogle",
+        "Omega",
+        "Phantom",
+        "Ragnarok",
+        "Sagittarius",
+        "Spriggan",
         // Light
-        "Alpha", "Lich", "Odin", "Phoenix", "Raiden", "Shiva", "Twintania", "Zodiark",
+        "Alpha",
+        "Lich",
+        "Odin",
+        "Phoenix",
+        "Raiden",
+        "Shiva",
+        "Twintania",
+        "Zodiark",
     ];
 
     // OCE (Materia)
@@ -45,7 +115,7 @@ pub fn get_region_from_server(server: &str) -> &'static str {
     } else if eu_servers.iter().any(|name| name.eq_ignore_ascii_case(s)) {
         "EU"
     } else if oce_servers.iter().any(|name| name.eq_ignore_ascii_case(s)) {
-        "OC" 
+        "OC"
     } else {
         "NA" // Default fallback
     }

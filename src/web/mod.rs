@@ -1,5 +1,6 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use mongodb::{
     options::IndexOptions,
     Client as MongoClient, Collection, IndexModel,
@@ -32,6 +33,20 @@ pub struct State {
     pub mongo: MongoClient,
     pub stats: RwLock<Option<CachedStatistics>>,
     pub listings_channel: Sender<Arc<[PartyFinderListing]>>,
+    pub fflogs_jobs_limit: usize,
+    pub fflogs_hidden_cache_ttl_hours: i64,
+    pub listing_upsert_concurrency: usize,
+    pub player_upsert_concurrency: usize,
+    /// in-flight FFLogs job lease map to avoid duplicate dispatch across workers
+    pub fflogs_job_leases: RwLock<HashMap<FflogsLeaseKey, DateTime<Utc>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FflogsLeaseKey {
+    pub content_id: u64,
+    pub zone_id: u32,
+    pub difficulty_id: i32,
+    pub partition: i32,
 }
 
 impl State {
@@ -45,6 +60,11 @@ impl State {
             mongo,
             stats: Default::default(),
             listings_channel: tx,
+            fflogs_jobs_limit: config.web.fflogs_jobs_limit.max(1),
+            fflogs_hidden_cache_ttl_hours: config.web.fflogs_hidden_cache_ttl_hours.max(1),
+            listing_upsert_concurrency: config.web.listing_upsert_concurrency.max(1),
+            player_upsert_concurrency: config.web.player_upsert_concurrency.max(1),
+            fflogs_job_leases: Default::default(),
         });
 
         // Initialize Indexes
@@ -111,6 +131,19 @@ impl State {
             )
             .await
             .context("could not create parse index")?;
+
+        // Players collection index (frequent lookups by content_id)
+        self.players_collection()
+            .create_index(
+                IndexModel::builder()
+                    .keys(mongodb::bson::doc! {
+                        "content_id": 1,
+                    })
+                    .build(),
+                None,
+            )
+            .await
+            .context("could not create players content_id index")?;
 
         Ok(())
     }

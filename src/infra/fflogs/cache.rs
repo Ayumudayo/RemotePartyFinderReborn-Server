@@ -6,6 +6,15 @@ use chrono::{TimeDelta, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+/// Zone cache key (zone + difficulty + partition)
+///
+/// Backward compatibility note:
+/// - legacy key was just `zone_id.to_string()`
+/// - new key disambiguates same zone across difficulty/partition
+pub fn make_zone_cache_key(zone_id: u32, difficulty_id: i32, partition: i32) -> String {
+    format!("{}:{}:{}", zone_id, difficulty_id.max(0), partition.max(0))
+}
+
 /// FFLogs Parse 캐시 문서 (ContentID당 1개)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ParseCacheDoc {
@@ -58,6 +67,14 @@ pub struct EncounterParse {
 
 /// Zone 캐시가 만료되었는지 확인 (갱신 기준: 24시간)
 pub fn is_zone_cache_expired(zone_cache: &ZoneCache) -> bool {
+    is_zone_cache_expired_with_hidden_ttl_hours(zone_cache, 24)
+}
+
+/// Zone 캐시가 만료되었는지 확인 (Hidden 캐시 TTL 조정 가능)
+pub fn is_zone_cache_expired_with_hidden_ttl_hours(
+    zone_cache: &ZoneCache,
+    hidden_ttl_hours: i64,
+) -> bool {
     // 추정 매칭 캐시는 오탐 가능성이 있으므로, 비교적 빠르게 만료시켜 재평가한다.
     // (특히 hidden 오탐을 영구 캐시하면 치명적)
     if zone_cache.estimated {
@@ -65,9 +82,11 @@ pub fn is_zone_cache_expired(zone_cache: &ZoneCache) -> bool {
         return zone_cache.fetched_at < expire_threshold;
     }
 
-    // Hidden 캐릭터는 재조회해도 결과가 바뀌지 않으므로, 만료 처리하지 않는다.
+    // Hidden 캐시는 무기한 유지하지 않고, 주기적으로 재확인한다.
     if zone_cache.hidden {
-        return false;
+        let ttl = hidden_ttl_hours.max(1);
+        let expire_threshold = Utc::now() - TimeDelta::try_hours(ttl).unwrap();
+        return zone_cache.fetched_at < expire_threshold;
     }
 
     let expire_threshold = Utc::now() - TimeDelta::try_hours(24).unwrap();

@@ -1,5 +1,9 @@
 [web]
 host = "127.0.0.1:8000"
+fflogs_jobs_limit = 20
+fflogs_hidden_cache_ttl_hours = 24
+listing_upsert_concurrency = 16
+player_upsert_concurrency = 32
 
 [mongo]
 url = "YOUR_MONGODB_CONNECTION_STRING"

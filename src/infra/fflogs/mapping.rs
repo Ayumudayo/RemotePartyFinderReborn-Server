@@ -105,7 +105,7 @@ lazy_static::lazy_static! {
         m.insert(73, FFLogsZone { name: "AAC Heavyweight (Savage)", partition: 1 });
         m.insert(72, FFLogsZone { name: "Trials III (Extreme)", partition: 1 });
         m.insert(68, FFLogsZone { name: "AAC Cruiserweight (Savage)", partition: 1 });
-        m.insert(65, FFLogsZone { name: "Futures Rewritten (Ultimate)", partition: 1 }); 
+        m.insert(65, FFLogsZone { name: "Futures Rewritten (Ultimate)", partition: 1 });
         m.insert(62, FFLogsZone { name: "AAC Light-heavyweight (Savage)", partition: 1 });
         m.insert(59, FFLogsZone { name: "Ultimates (Legacy)", partition: 1 });
         m

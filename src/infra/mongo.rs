@@ -125,10 +125,20 @@ pub async fn insert_listing(
 pub async fn upsert_players(
     collection: Collection<crate::player::Player>,
     players: &[crate::player::UploadablePlayer],
+    concurrency: usize,
 ) -> anyhow::Result<usize> {
     let mut successful = 0;
-    let now = Utc::now();
 
+    #[derive(Clone)]
+    struct PlayerUpsertOp {
+        content_id: u64,
+        name: String,
+        home_world: u16,
+        current_world: u16,
+        account_id: String,
+    }
+
+    let mut ops = Vec::new();
     for player in players {
         if player.content_id == 0 || player.name.is_empty() || player.home_world >= 1_000 {
             continue;
@@ -140,49 +150,70 @@ pub async fn upsert_players(
             0
         };
 
-        let account_id_val = if player.account_id != 0 {
+        let account_id = if player.account_id != 0 {
             player.account_id.to_string()
         } else {
             "-1".to_string()
         };
 
-        let mut set_doc = doc! {
-            "account_id": account_id_val,
-            "name": &player.name,
-            "last_seen": now,
-        };
+        ops.push(PlayerUpsertOp {
+            content_id: player.content_id,
+            name: player.name.clone(),
+            home_world: player.home_world,
+            current_world,
+            account_id,
+        });
+    }
 
-        // home_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
-        // (NameCache 기반 업로드는 월드를 모를 수 있으므로, 0으로 다운그레이드되는 것을 방지)
-        if player.home_world != 0 {
-            set_doc.insert("home_world", player.home_world as u32);
-        }
+    let now = Utc::now();
 
-        // current_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
-        if current_world != 0 {
-            set_doc.insert("current_world", current_world as u32);
-        }
+    let mut writes = futures_util::stream::iter(
+        ops.into_iter().map(|op| {
+                let collection = collection.clone();
+                let now = now.clone();
+                async move {
+                    let mut set_doc = doc! {
+                        "account_id": op.account_id,
+                        "name": op.name,
+                        "last_seen": now,
+                    };
 
-        let set_on_insert_doc = doc! {
-            "content_id": player.content_id as i64,
-            // 신규 insert 시에는 unknown(0)도 그대로 저장
-            "home_world": player.home_world as u32,
-            "current_world": current_world as u32,
-        };
+                    // home_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
+                    // (NameCache 기반 업로드는 월드를 모를 수 있으므로, 0으로 다운그레이드되는 것을 방지)
+                    if op.home_world != 0 {
+                        set_doc.insert("home_world", op.home_world as u32);
+                    }
 
-        let opts = UpdateOptions::builder().upsert(true).build();
-        let result = collection
-            .update_one(
-                doc! { "content_id": player.content_id as i64 },
-                doc! {
-                    "$set": set_doc,
-                    "$inc": { "seen_count": 1 },
-                    "$setOnInsert": set_on_insert_doc,
-                },
-                opts,
-            )
-            .await;
+                    // current_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
+                    if op.current_world != 0 {
+                        set_doc.insert("current_world", op.current_world as u32);
+                    }
 
+                    let set_on_insert_doc = doc! {
+                        "content_id": op.content_id as i64,
+                        // 신규 insert 시에는 unknown(0)도 그대로 저장
+                        "home_world": op.home_world as u32,
+                        "current_world": op.current_world as u32,
+                    };
+
+                    let opts = UpdateOptions::builder().upsert(true).build();
+                    collection
+                        .update_one(
+                            doc! { "content_id": op.content_id as i64 },
+                            doc! {
+                                "$set": set_doc,
+                                "$inc": { "seen_count": 1 },
+                                "$setOnInsert": set_on_insert_doc,
+                            },
+                            opts,
+                        )
+                        .await
+                }
+            }),
+    )
+    .buffer_unordered(concurrency.max(1));
+
+    while let Some(result) = writes.next().await {
         if result.is_ok() {
             successful += 1;
         }
@@ -241,16 +272,20 @@ pub async fn get_all_active_players(
 // =============================================================================
 
 use std::collections::HashMap;
-pub use crate::fflogs::cache::{ParseCacheDoc, ZoneCache, EncounterParse, is_zone_cache_expired};
+pub use crate::fflogs::cache::{
+    ParseCacheDoc,
+    ZoneCache,
+    EncounterParse,
+    is_zone_cache_expired,
+    is_zone_cache_expired_with_hidden_ttl_hours,
+};
 
 /// 플레이어의 특정 Zone 캐시 조회
 pub async fn get_zone_cache(
     collection: Collection<ParseCacheDoc>,
     content_id: u64,
-    zone_id: u32,
+    zone_key: &str,
 ) -> anyhow::Result<Option<ZoneCache>> {
-    let zone_key = zone_id.to_string();
-    
     let doc = collection
         .find_one(
             doc! { "content_id": content_id as i64 },
@@ -258,17 +293,16 @@ pub async fn get_zone_cache(
         )
         .await?;
     
-    Ok(doc.and_then(|d| d.zones.get(&zone_key).cloned()))
+    Ok(doc.and_then(|d| d.zones.get(zone_key).cloned()))
 }
 
 /// 여러 플레이어의 특정 Zone 캐시 일괄 조회
 pub async fn get_zone_caches(
     collection: Collection<ParseCacheDoc>,
     content_ids: &[u64],
-    zone_id: u32,
+    zone_key: &str,
 ) -> anyhow::Result<HashMap<u64, ZoneCache>> {
     let ids: Vec<i64> = content_ids.iter().map(|&id| id as i64).collect();
-    let zone_key = zone_id.to_string();
     
     let cursor = collection
         .find(
@@ -284,7 +318,7 @@ pub async fn get_zone_caches(
     
     let mut result = HashMap::new();
     for doc in docs {
-        if let Some(zone_cache) = doc.zones.get(&zone_key) {
+        if let Some(zone_cache) = doc.zones.get(zone_key) {
             result.insert(doc.content_id as u64, zone_cache.clone());
         }
     }
@@ -325,11 +359,11 @@ pub async fn get_parse_docs(
 pub async fn upsert_zone_cache(
     collection: Collection<ParseCacheDoc>,
     content_id: u64,
-    zone_id: u32,
+    zone_key: &str,
     zone_cache: &ZoneCache,
 ) -> anyhow::Result<()> {
     let opts = UpdateOptions::builder().upsert(true).build();
-    let zone_key = format!("zones.{}", zone_id);
+    let zone_path = format!("zones.{}", zone_key);
     
     // BSON으로 변환
     let zone_bson = mongodb::bson::to_bson(zone_cache)?;
@@ -338,7 +372,7 @@ pub async fn upsert_zone_cache(
         .update_one(
             doc! { "content_id": content_id as i64 },
             doc! {
-                "$set": { &zone_key: zone_bson },
+                "$set": { &zone_path: zone_bson },
                 "$setOnInsert": { "content_id": content_id as i64 },
             },
             opts,
