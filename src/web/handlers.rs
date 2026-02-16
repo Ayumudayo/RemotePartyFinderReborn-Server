@@ -16,6 +16,53 @@ use crate::{
 };
 use super::State;
 
+fn resolve_member_player(
+    players: &HashMap<u64, crate::player::Player>,
+    uid: u64,
+    is_leader_member: bool,
+    leader_name: &str,
+    leader_home_world: u16,
+    leader_current_world: u16,
+) -> (crate::player::Player, bool) {
+    if let Some(player) = players.get(&uid) {
+        return (player.clone(), false);
+    }
+
+    if is_leader_member {
+        let leader_name = if leader_name.trim().is_empty() {
+            "Party Leader".to_string()
+        } else {
+            leader_name.to_string()
+        };
+
+        return (
+            crate::player::Player {
+                content_id: uid,
+                name: leader_name,
+                home_world: leader_home_world,
+                current_world: leader_current_world,
+                last_seen: chrono::Utc::now(),
+                seen_count: 0,
+                account_id: "-1".to_string(),
+            },
+            true,
+        );
+    }
+
+    (
+        crate::player::Player {
+            content_id: uid,
+            name: "Unknown Member".to_string(),
+            home_world: 0,
+            current_world: 0,
+            last_seen: chrono::Utc::now(),
+            seen_count: 0,
+            account_id: "-1".to_string(),
+        },
+        false,
+    )
+}
+
 fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer> {
     let mut world_ids: Vec<u32> = crate::ffxiv::WORLDS.keys().copied().collect();
     world_ids.sort_unstable();
@@ -190,6 +237,8 @@ pub async fn listings_handler(
 
             // Match players to listings with job info
             let mut renderable_containers = Vec::new();
+            let mut leader_fallback_total = 0usize;
+            let mut leader_fallback_listing_count = 0usize;
 
             for container in containers {
                 // Determine FFLogs Zone ID/Encounter ID
@@ -218,10 +267,12 @@ pub async fn listings_handler(
 
                 let jobs = &container.listing.jobs_present;
                 let content_ids = &container.listing.member_content_ids;
+                let leader_name_text = container.listing.name.full_text(&lang);
                 
                 let zone_key = crate::fflogs::make_zone_cache_key(zone_id, difficulty_id, partition);
                 let legacy_zone_key = zone_id.to_string();
 
+                let mut listing_leader_fallback_hits = 0usize;
                 let members: Vec<crate::template::listings::RenderableMember> = content_ids.iter()
                     .enumerate()
                     .filter(|(_, id)| **id != 0) // 빈 슬롯 제외
@@ -230,36 +281,17 @@ pub async fn listings_handler(
                         let job_id = jobs.get(i).copied().unwrap_or(0);
                         let is_leader_member = uid == container.listing.leader_content_id || i == 0;
 
-                        let player = players.get(&uid).cloned().unwrap_or_else(|| {
-                            if is_leader_member {
-                                let leader_name = container.listing.name.full_text(&lang);
-                                let leader_name = if leader_name.trim().is_empty() {
-                                    "Party Leader".to_string()
-                                } else {
-                                    leader_name
-                                };
-
-                                crate::player::Player {
-                                    content_id: uid,
-                                    name: leader_name,
-                                    home_world: container.listing.home_world,
-                                    current_world: container.listing.current_world,
-                                    last_seen: chrono::Utc::now(),
-                                    seen_count: 0,
-                                    account_id: "-1".to_string(),
-                                }
-                            } else {
-                                crate::player::Player {
-                                    content_id: uid,
-                                    name: "Unknown Member".to_string(),
-                                    home_world: 0,
-                                    current_world: 0,
-                                    last_seen: chrono::Utc::now(),
-                                    seen_count: 0,
-                                    account_id: "-1".to_string(),
-                                }
-                            }
-                        });
+                        let (player, used_leader_fallback) = resolve_member_player(
+                            &players,
+                            uid,
+                            is_leader_member,
+                            &leader_name_text,
+                            container.listing.home_world,
+                            container.listing.current_world,
+                        );
+                        if used_leader_fallback {
+                            listing_leader_fallback_hits += 1;
+                        }
                         
                         // 잡 정보가 없는 멤버는 표시하지 않음 (Ghost Member 방지)
                         // 리스팅 정보(jobs)와 세부 정보(content_ids) 간의 불일치 시, 리스팅 정보를 신뢰함
@@ -299,6 +331,18 @@ pub async fn listings_handler(
                         })
                     })
                     .collect();
+
+                if listing_leader_fallback_hits > 0 {
+                    leader_fallback_total += listing_leader_fallback_hits;
+                    leader_fallback_listing_count += 1;
+
+                    tracing::debug!(
+                        listing_id = container.listing.id,
+                        leader_content_id = container.listing.leader_content_id,
+                        fallback_hits = listing_leader_fallback_hits,
+                        "members: applied leader metadata fallback",
+                    );
+                }
                 
                 // 파티장 로그 계산 (leader_content_id 사용) - 헬퍼 함수 사용
                 let leader_content_id = container.listing.leader_content_id;
@@ -331,6 +375,14 @@ pub async fn listings_handler(
                     members,
                     leader_parse,
                 });
+            }
+
+            if leader_fallback_total > 0 {
+                tracing::info!(
+                    listing_count = leader_fallback_listing_count,
+                    fallback_hits = leader_fallback_total,
+                    "members: leader metadata fallback used in listings response",
+                );
             }
 
             ListingsTemplate { containers: renderable_containers, lang }
@@ -852,4 +904,60 @@ pub async fn contribute_fflogs_results_handler(
     }
 
     Ok(warp::reply::json(&format!("Updated {} records", success_count)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_member_player;
+    use chrono::Utc;
+    use std::collections::HashMap;
+
+    #[test]
+    fn resolve_member_player_uses_existing_player_when_present() {
+        let uid = 101u64;
+        let mut players = HashMap::new();
+        players.insert(
+            uid,
+            crate::player::Player {
+                content_id: uid,
+                name: "Known Player".to_string(),
+                home_world: 73,
+                current_world: 73,
+                last_seen: Utc::now(),
+                seen_count: 5,
+                account_id: "123".to_string(),
+            },
+        );
+
+        let (player, used_fallback) = resolve_member_player(&players, uid, true, "Leader", 74, 75);
+
+        assert!(!used_fallback);
+        assert_eq!(player.name, "Known Player");
+        assert_eq!(player.home_world, 73);
+    }
+
+    #[test]
+    fn resolve_member_player_falls_back_to_leader_metadata_when_missing() {
+        let players: HashMap<u64, crate::player::Player> = HashMap::new();
+
+        let (player, used_fallback) =
+            resolve_member_player(&players, 202, true, "Leader Name", 79, 80);
+
+        assert!(used_fallback);
+        assert_eq!(player.name, "Leader Name");
+        assert_eq!(player.home_world, 79);
+        assert_eq!(player.current_world, 80);
+    }
+
+    #[test]
+    fn resolve_member_player_keeps_unknown_for_non_leader_missing_player() {
+        let players: HashMap<u64, crate::player::Player> = HashMap::new();
+
+        let (player, used_fallback) =
+            resolve_member_player(&players, 303, false, "Leader Name", 79, 80);
+
+        assert!(!used_fallback);
+        assert_eq!(player.name, "Unknown Member");
+        assert_eq!(player.home_world, 0);
+    }
 }

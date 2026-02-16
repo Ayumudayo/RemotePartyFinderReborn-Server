@@ -21,6 +21,7 @@ const LISTING: &str = r###"
   "min_item_level": 0,
   "num_parties": 1,
   "slots_available": 7,
+  "last_server_restart": 0,
   "objective": 3,
   "conditions": 1,
   "duty_finder_settings": 0,
@@ -52,7 +53,7 @@ lazy_static::lazy_static! {
         created_world: 73,
         home_world: 73,
         current_world: 73,
-        category: DutyCategory::Duty,
+        category: DutyCategory::None,
         duty: 55,
         duty_type: DutyType::Normal,
         beginners_welcome: false,
@@ -60,8 +61,9 @@ lazy_static::lazy_static! {
         min_item_level: 0,
         num_parties: 1,
         slots_available: 7,
+        last_server_restart: 0,
         objective: ObjectiveFlags::PRACTICE | ObjectiveFlags::DUTY_COMPLETION,
-        conditions: ConditionFlags::NONE,
+        conditions: ConditionFlags::DUTY_COMPLETE,
         duty_finder_settings: DutyFinderSettingsFlags::NONE,
         loot_rules: LootRuleFlags::NONE,
         search_area: SearchAreaFlags::DATA_CENTRE,
@@ -71,6 +73,8 @@ lazy_static::lazy_static! {
             },
         ],
         jobs_present: vec![5, 0, 0, 0, 0, 0, 0, 0],
+        member_content_ids: vec![],
+        leader_content_id: 0,
     };
 }
 

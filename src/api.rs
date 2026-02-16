@@ -23,6 +23,30 @@ pub fn api(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .boxed()
 }
 
+fn resolve_api_member_identity(
+    player_map: &HashMap<u64, crate::player::Player>,
+    uid: u64,
+    is_leader_member: bool,
+    leader_name: &str,
+    leader_home_world: u16,
+) -> Option<(String, u16)> {
+    if let Some(player) = player_map.get(&uid) {
+        return Some((player.name.clone(), player.home_world));
+    }
+
+    if is_leader_member {
+        let leader_name = if leader_name.trim().is_empty() {
+            "Party Leader".to_string()
+        } else {
+            leader_name.to_string()
+        };
+
+        return Some((leader_name, leader_home_world));
+    }
+
+    None
+}
+
 fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     async fn logic(state: Arc<State>) -> Result<warp::reply::Response, Infallible> {
         let listings = get_current_listings(state.collection()).await;
@@ -88,6 +112,9 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                 
                 let mut listings_with_members = Vec::new();
                 for ql in listings {
+                    let leader_content_id = ql.listing.leader_content_id;
+                    let leader_name = ql.listing.name.full_text(&Language::English);
+                    let leader_home_world = ql.listing.home_world;
                     let member_ids = ql.listing.member_content_ids.clone();
                     let mut container: ApiReadableListingContainer = ql.into();
                     
@@ -96,28 +123,28 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                         .get(&container.listing.id)
                         .cloned()
                         .unwrap_or((0, 0, String::new()));
-
+                    
                     let mut members = Vec::new();
                     
-                    for id in member_ids {
+                    for (i, id) in member_ids.into_iter().enumerate() {
                         let uid = id as u64;
-                        if let Some(p) = player_map.get(&uid) {
-                            // Lookup in pre-fetched map
-                            let (percentile, color_class) = if zone_id > 0 {
-                                if let Some(zone_map) = parse_data_map.get(&zone_key) {
-                                    if let Some(zone_cache) = zone_map.get(&uid) {
-                                        let enc_key = encounter_id.to_string();
-                                        if let Some(enc_parse) = zone_cache.encounters.get(&enc_key) {
-                                            if enc_parse.percentile < 0.0 {
-                                                (None, "parse-none".to_string())
-                                            } else {
-                                                (
-                                                    Some(enc_parse.percentile.round() as u8),
-                                                    crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string(),
-                                                )
-                                            }
-                                        } else {
+                        if uid == 0 {
+                            continue;
+                        }
+
+                        // Lookup in pre-fetched map
+                        let (percentile, color_class) = if zone_id > 0 {
+                            if let Some(zone_map) = parse_data_map.get(&zone_key) {
+                                if let Some(zone_cache) = zone_map.get(&uid) {
+                                    let enc_key = encounter_id.to_string();
+                                    if let Some(enc_parse) = zone_cache.encounters.get(&enc_key) {
+                                        if enc_parse.percentile < 0.0 {
                                             (None, "parse-none".to_string())
+                                        } else {
+                                            (
+                                                Some(enc_parse.percentile.round() as u8),
+                                                crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string(),
+                                            )
                                         }
                                     } else {
                                         (None, "parse-none".to_string())
@@ -127,16 +154,29 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                                 }
                             } else {
                                 (None, "parse-none".to_string())
-                            };
-                            
-                            members.push(ApiReadableMember {
-                                content_id: p.content_id,
-                                name: p.name.clone(),
-                                home_world: p.home_world.into(),
-                                parse_percentile: percentile,
-                                parse_color_class: color_class,
-                            });
-                        }
+                            }
+                        } else {
+                            (None, "parse-none".to_string())
+                        };
+
+                        let is_leader_member = uid == leader_content_id || i == 0;
+                        let Some((name, home_world)) = resolve_api_member_identity(
+                            &player_map,
+                            uid,
+                            is_leader_member,
+                            &leader_name,
+                            leader_home_world,
+                        ) else {
+                            continue;
+                        };
+
+                        members.push(ApiReadableMember {
+                            content_id: uid,
+                            name,
+                            home_world: home_world.into(),
+                            parse_percentile: percentile,
+                            parse_color_class: color_class,
+                        });
                     }
                     
                     container.listing.members = members;
