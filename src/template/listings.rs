@@ -47,6 +47,13 @@ pub struct RenderableListing {
     pub leader_parse: ParseDisplay,
 }
 
+impl RenderableListing {
+    pub fn is_alliance_view(&self) -> bool {
+        self.container.listing.num_parties >= 3
+            || self.members.iter().any(|member| member.party_index > 0)
+    }
+}
+
 /// Parse percentile 표시 정보
 #[derive(Debug, Clone, Default)]
 pub struct ParseDisplay {
@@ -120,6 +127,9 @@ pub struct RenderableMember {
     pub player: crate::player::Player,
     pub parse: ParseDisplay,
     pub progress: ProgressDisplay,
+    pub slot_index: usize,
+    pub party_index: u8,
+    pub party_header: Option<&'static str>,
 }
 
 impl RenderableMember {
@@ -183,6 +193,9 @@ mod tests {
             },
             parse: Default::default(),
             progress: Default::default(),
+            slot_index: 0,
+            party_index: 0,
+            party_header: None,
         }
     }
 

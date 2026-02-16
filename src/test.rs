@@ -43,6 +43,7 @@ const LISTING: &str = r###"
     0
   ],
   "member_content_ids": [],
+  "member_jobs": [],
   "leader_content_id": 0
 }"###;
 
@@ -76,6 +77,7 @@ lazy_static::lazy_static! {
         ],
         jobs_present: vec![5, 0, 0, 0, 0, 0, 0, 0],
         member_content_ids: vec![],
+        member_jobs: vec![],
         leader_content_id: 0,
     };
 }

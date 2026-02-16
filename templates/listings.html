@@ -227,7 +227,7 @@ remote party finder reborn - listings
                     {%- endfor %}
                     <div class="total">{{ listing.slots_filled() }}/{{ listing.slots_available }}</div>
                 </div>
-                <div class="members-list">
+                <div class="members-list{% if renderable.is_alliance_view() %} alliance{% endif %}">
                     <div class="members-header">Members ({{ renderable.members.len() }})</div>
                     {%- if renderable.members.is_empty() %}
                     <p class="no-members"><em data-i18n="no_members">No information available for other members</em>
@@ -235,11 +235,16 @@ remote party finder reborn - listings
                     {%- else %}
                     <ul>
                         {%- for member in renderable.members %}
-                        <li>
+                        {%- if let Some(label) = member.party_header %}
+                        <li class="party-divider">{{ label }}</li>
+                        {%- endif %}
+                        <li class="member-row{% if member.job_id == 0 %} unknown-job{% endif %}" data-party-index="{{ member.party_index }}" data-slot-index="{{ member.slot_index }}">
                             {%- if let Some(code) = member.job_code() %}
                             <svg class="job-icon {{ member.role_class() }}" viewBox="0 0 32 32" aria-hidden="true">
                                 <use href="/assets/icons.svg#{{ code }}"></use>
                             </svg>
+                            {%- else %}
+                            <span class="job-unknown" title="Unknown job">?</span>
                             {%- endif %}
 
                             {%- if member.parse.hidden %}

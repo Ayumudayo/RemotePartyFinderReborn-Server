@@ -39,6 +39,8 @@ pub struct PartyFinderListing {
     pub jobs_present: Vec<u8>,
     #[serde(default)]
     pub member_content_ids: Vec<i64>,
+    #[serde(default)]
+    pub member_jobs: Vec<u8>,
     /// 파티장의 전체 Content ID (디테일에서 업데이트)
     #[serde(default)]
     pub leader_content_id: u64,

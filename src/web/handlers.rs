@@ -76,6 +76,18 @@ fn resolve_member_player(
     )
 }
 
+fn alliance_party_label(party_index: u8) -> &'static str {
+    match party_index {
+        0 => "Alliance A",
+        1 => "Alliance B",
+        2 => "Alliance C",
+        3 => "Alliance D",
+        4 => "Alliance E",
+        5 => "Alliance F",
+        _ => "Alliance ?",
+    }
+}
+
 fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer> {
     let mut world_ids: Vec<u32> = crate::ffxiv::WORLDS.keys().copied().collect();
     world_ids.sort_unstable();
@@ -279,19 +291,29 @@ pub async fn listings_handler(
                 };
 
                 let jobs = &container.listing.jobs_present;
+                let detail_jobs = &container.listing.member_jobs;
                 let content_ids = &container.listing.member_content_ids;
                 let leader_name_text = container.listing.name.full_text(&lang);
-                
+                let alliance_like = container.listing.num_parties >= 3
+                    || content_ids.len() > 8
+                    || detail_jobs.len() > 8;
+                 
                 let zone_key = crate::fflogs::make_zone_cache_key(zone_id, difficulty_id, partition);
                 let legacy_zone_key = zone_id.to_string();
 
                 let mut listing_leader_fallback_hits = 0usize;
+                let mut emitted_party_headers: HashSet<u8> = HashSet::new();
                 let members: Vec<crate::template::listings::RenderableMember> = content_ids.iter()
                     .enumerate()
                     .filter(|(_, id)| **id != 0) // 빈 슬롯 제외
                     .filter_map(|(i, id)| {
                         let uid = *id as u64;
-                        let job_id = jobs.get(i).copied().unwrap_or(0);
+                        let party_index = (i / 8) as u8;
+                        let job_id = detail_jobs
+                            .get(i)
+                            .copied()
+                            .or_else(|| jobs.get(i).copied())
+                            .unwrap_or(0);
                         let is_leader_member = uid == container.listing.leader_content_id || i == 0;
 
                         let (player, used_leader_fallback) = resolve_member_player(
@@ -306,12 +328,6 @@ pub async fn listings_handler(
                             listing_leader_fallback_hits += 1;
                         }
                         
-                        // 잡 정보가 없는 멤버는 표시하지 않음 (Ghost Member 방지)
-                        // 리스팅 정보(jobs)와 세부 정보(content_ids) 간의 불일치 시, 리스팅 정보를 신뢰함
-                        if job_id == 0 {
-                            return None;
-                        }
-
                         let (parse, progress) = if zone_id > 0 {
                             lookup_fflogs_displays(
                                 &all_parse_docs,
@@ -341,6 +357,13 @@ pub async fn listings_handler(
                             player,
                             parse,
                             progress,
+                            slot_index: i,
+                            party_index,
+                            party_header: if alliance_like && emitted_party_headers.insert(party_index) {
+                                Some(alliance_party_label(party_index))
+                            } else {
+                                None
+                            },
                         })
                     })
                     .collect();
@@ -603,6 +626,8 @@ pub struct UploadablePartyDetail {
     pub leader_name: String,
     pub home_world: u16,
     pub member_content_ids: Vec<u64>,
+    #[serde(default)]
+    pub member_jobs: Option<Vec<u8>>,
 }
 
 pub async fn contribute_detail_handler(
@@ -626,6 +651,27 @@ pub async fn contribute_detail_handler(
         return Ok(warp::reply::with_status("too many members in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
     }
 
+    if let Some(member_jobs) = detail.member_jobs.as_ref() {
+        if member_jobs.len() > state.max_detail_member_count {
+            return Ok(warp::reply::with_status("too many member jobs in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+        }
+    }
+
+    let non_zero_member_count = detail.member_content_ids.iter().filter(|&&id| id != 0).count();
+    let member_jobs_len = detail.member_jobs.as_ref().map_or(0, |jobs| jobs.len());
+    let non_zero_job_count = detail
+        .member_jobs
+        .as_ref()
+        .map_or(0, |jobs| jobs.iter().filter(|&&job| job != 0).count());
+    tracing::debug!(
+        listing_id = detail.listing_id,
+        member_count = detail.member_content_ids.len(),
+        non_zero_member_count,
+        member_jobs_len,
+        non_zero_job_count,
+        "received party detail payload"
+    );
+
     // 리더 정보를 플레이어로 저장
     if detail.leader_content_id != 0 && !detail.leader_name.is_empty() && detail.home_world < 1000 {
         let leader = crate::player::UploadablePlayer {
@@ -648,15 +694,21 @@ pub async fn contribute_detail_handler(
 
     // listing에 member_content_ids 및 leader_content_id 저장
     let member_ids_i64: Vec<i64> = detail.member_content_ids.iter().map(|&id| id as i64).collect();
+    let mut set_doc = doc! {
+        "listing.member_content_ids": member_ids_i64,
+        "listing.leader_content_id": detail.leader_content_id as i64,
+    };
+
+    if let Some(member_jobs) = detail.member_jobs.as_ref() {
+        let member_jobs_i32: Vec<i32> = member_jobs.iter().map(|&job| i32::from(job)).collect();
+        set_doc.insert("listing.member_jobs", member_jobs_i32);
+    }
 
     let update_result = state.collection()
         .update_one(
             doc! { "listing.id": detail.listing_id },
             doc! {
-                "$set": {
-                    "listing.member_content_ids": member_ids_i64,
-                    "listing.leader_content_id": detail.leader_content_id as i64,
-                }
+                "$set": set_doc
             },
             None,
         )
