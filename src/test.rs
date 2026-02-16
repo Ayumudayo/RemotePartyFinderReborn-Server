@@ -23,7 +23,7 @@ const LISTING: &str = r###"
   "slots_available": 7,
   "last_server_restart": 0,
   "objective": 3,
-  "conditions": 1,
+  "conditions": 2,
   "duty_finder_settings": 0,
   "loot_rules": 0,
   "search_area": 1,
@@ -41,7 +41,9 @@ const LISTING: &str = r###"
     0,
     0,
     0
-  ]
+  ],
+  "member_content_ids": [],
+  "leader_content_id": 0
 }"###;
 
 lazy_static::lazy_static! {

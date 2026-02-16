@@ -33,9 +33,9 @@ ingest_rate_limit_fflogs_jobs_per_minute = 30
 ingest_rate_limit_fflogs_results_per_minute = 60
 
 # Signature/replay protection
-# Keep false for public plugin distribution; true is for controlled/private deployments.
-ingest_require_signature = false
-ingest_shared_secret = "rpf-reborn-public-ingest-v1"
+# Use this profile only for controlled/private deployments.
+ingest_require_signature = true
+ingest_shared_secret = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
 ingest_clock_skew_seconds = 300
 ingest_nonce_ttl_seconds = 300
 

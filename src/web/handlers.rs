@@ -7,10 +7,14 @@ use std::{
         atomic::Ordering as AtomicOrdering,
     },
 };
-use warp::Reply;
+use warp::{
+    Reply,
+    http::{HeaderMap, StatusCode},
+};
 use futures_util::StreamExt;
 use mongodb::{bson::doc, options::UpdateOptions};
 use chrono::{TimeDelta, Utc};
+use uuid::Uuid;
 
 use crate::listing::PartyFinderListing;
 
@@ -23,6 +27,7 @@ use crate::{
     template::stats::StatsTemplate,
 };
 use super::State;
+use super::ingest_guard::{self, IngestEndpoint};
 
 fn resolve_member_player(
     players: &HashMap<u64, crate::player::Player>,
@@ -434,24 +439,54 @@ pub async fn stats_handler(
 
 pub async fn contribute_handler(
     state: Arc<State>,
+    headers: HeaderMap,
     listing: PartyFinderListing,
-) -> std::result::Result<impl Reply, Infallible> {
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    if let Err(error) = ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::Contribute,
+        &headers,
+        "POST",
+        "/contribute",
+    )
+    .await
+    {
+        return Ok(ingest_guard::guard_error_reply(error));
+    }
+
     if listing.seconds_remaining > 60 * 60 {
-        return Ok("invalid listing".to_string());
+        return Ok(warp::reply::with_status("invalid listing", StatusCode::BAD_REQUEST).into_response());
     }
 
     let result = insert_listing(state.collection(), &listing).await;
 
     // publish listings to websockets
     let _ = state.listings_channel.send(vec![listing].into()); 
-    Ok(format!("{:#?}", result))
+    Ok(format!("{:#?}", result).into_response())
 }
 
 pub async fn contribute_multiple_handler(
     state: Arc<State>,
+    headers: HeaderMap,
     listings: Vec<PartyFinderListing>,
-) -> std::result::Result<impl Reply, Infallible> {
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    if let Err(error) = ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::ContributeMultiple,
+        &headers,
+        "POST",
+        "/contribute/multiple",
+    )
+    .await
+    {
+        return Ok(ingest_guard::guard_error_reply(error));
+    }
+
     let total = listings.len();
+    if total > state.max_multiple_batch_size {
+        return Ok(warp::reply::with_status("too many listings in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+    }
+
     let mut successful = 0;
 
     let mut write_ops = Vec::new();
@@ -519,14 +554,31 @@ pub async fn contribute_multiple_handler(
     }
 
     let _ = state.listings_channel.send(listings.into());
-    Ok(format!("{}/{} updated", successful, total))
+    Ok(format!("{}/{} updated", successful, total).into_response())
 }
 
 pub async fn contribute_players_handler(
     state: Arc<State>,
+    headers: HeaderMap,
     players: Vec<UploadablePlayer>,
-) -> std::result::Result<impl Reply, Infallible> {
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    if let Err(error) = ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::ContributePlayers,
+        &headers,
+        "POST",
+        "/contribute/players",
+    )
+    .await
+    {
+        return Ok(ingest_guard::guard_error_reply(error));
+    }
+
     let total = players.len();
+    if total > state.max_players_batch_size {
+        return Ok(warp::reply::with_status("too many players in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+    }
+
     let result = upsert_players(
         state.players_collection(),
         &players,
@@ -535,10 +587,10 @@ pub async fn contribute_players_handler(
     .await;
 
     match result {
-        Ok(successful) => Ok(format!("{}/{} players updated", successful, total)),
+        Ok(successful) => Ok(format!("{}/{} players updated", successful, total).into_response()),
         Err(e) => {
             tracing::error!("error upserting players: {:#?}", e);
-            Ok(format!("0/{} players updated (error)", total))
+            Ok(format!("0/{} players updated (error)", total).into_response())
         }
     }
 }
@@ -555,8 +607,25 @@ pub struct UploadablePartyDetail {
 
 pub async fn contribute_detail_handler(
     state: Arc<State>,
+    headers: HeaderMap,
     detail: UploadablePartyDetail,
-) -> std::result::Result<impl Reply, Infallible> {
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    if let Err(error) = ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::ContributeDetail,
+        &headers,
+        "POST",
+        "/contribute/detail",
+    )
+    .await
+    {
+        return Ok(ingest_guard::guard_error_reply(error));
+    }
+
+    if detail.member_content_ids.len() > state.max_detail_member_count {
+        return Ok(warp::reply::with_status("too many members in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+    }
+
     // 리더 정보를 플레이어로 저장
     if detail.leader_content_id != 0 && !detail.leader_name.is_empty() && detail.home_world < 1000 {
         let leader = crate::player::UploadablePlayer {
@@ -592,10 +661,10 @@ pub async fn contribute_detail_handler(
             None,
         )
         .await;
-
+    
     tracing::debug!("Updated listing {} members: {:?}", detail.listing_id, update_result);
-
-    Ok(warp::reply::json(&"ok"))
+    
+    Ok(warp::reply::json(&"ok").into_response())
 }
 
 /// FFLogs 작업 요청 구조체 (Plugin -> Server response)
@@ -620,6 +689,8 @@ pub struct ParseJob {
     pub encounter_id: u32,
     #[serde(default)]
     pub secondary_encounter_id: Option<u32>,
+    #[serde(default)]
+    pub lease_token: String,
 }
 
 /// FFLogs 파싱 결과 구조체 (Plugin -> Server request)
@@ -642,16 +713,33 @@ pub struct ParseResult {
     /// 매칭에 사용된 서버(월드) slug
     #[serde(default)]
     pub matched_server: Option<String>,
+    /// FFLogs job lease token (jobs 응답과 묶이는 단회성 토큰)
+    #[serde(default)]
+    pub lease_token: String,
 }
 
 /// 플러그인에게 파싱 작업 할당
 pub async fn contribute_fflogs_jobs_handler(
     state: Arc<State>,
-) -> std::result::Result<impl Reply, Infallible> {
+    headers: HeaderMap,
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    let guard_ctx = match ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::ContributeFflogsJobs,
+        &headers,
+        "GET",
+        "/contribute/fflogs/jobs",
+    )
+    .await
+    {
+        Ok(ctx) => ctx,
+        Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
+    };
+
     // 1. 현재 활성 파티 목록 가져오기 (1시간 이내)
     let listings = match get_current_listings(state.collection()).await {
         Ok(l) => l,
-        Err(_) => return Ok(warp::reply::json(&Vec::<ParseJob>::new())),
+        Err(_) => return Ok(warp::reply::json(&Vec::<ParseJob>::new()).into_response()),
     };
 
     let mut jobs = Vec::new();
@@ -799,13 +887,14 @@ pub async fn contribute_fflogs_jobs_handler(
                 partition,
                 encounter_id: fflogs_info.encounter_id,
                 secondary_encounter_id: fflogs_info.secondary_encounter_id,
+                lease_token: String::new(),
             });
         }
     }
 
     // lease selected jobs to avoid duplicate dispatch across concurrent workers
     let Some(lease_ttl) = TimeDelta::try_minutes(3) else {
-        return Ok(warp::reply::json(&Vec::<ParseJob>::new()));
+        return Ok(warp::reply::json(&Vec::<ParseJob>::new()).into_response());
     };
     let now = Utc::now();
 
@@ -813,10 +902,12 @@ pub async fn contribute_fflogs_jobs_handler(
         let mut leases = state.fflogs_job_leases.write().await;
 
         // cleanup expired leases (worker crash / timeout safety)
-        leases.retain(|_, leased_at| (*leased_at + lease_ttl) > now);
+        leases.retain(|_, lease| (lease.leased_at + lease_ttl) > now);
 
         let mut seen: HashSet<super::FflogsLeaseKey> = HashSet::new();
-        jobs.retain(|job| {
+        let mut leased_jobs = Vec::with_capacity(jobs.len());
+
+        for mut job in jobs {
             let key = super::FflogsLeaseKey {
                 content_id: job.content_id,
                 zone_id: job.zone_id,
@@ -826,17 +917,26 @@ pub async fn contribute_fflogs_jobs_handler(
 
             // de-dup within this response payload
             if !seen.insert(key.clone()) {
-                return false;
+                continue;
             }
 
             // skip if another worker already leased this key
             if leases.contains_key(&key) {
-                return false;
+                continue;
             }
 
-            leases.insert(key, now);
-            true
-        });
+            let lease_token = Uuid::new_v4().to_string();
+            leases.insert(key, super::FflogsLeaseEntry {
+                leased_at: now,
+                client_id: guard_ctx.client_id.clone(),
+                lease_token: lease_token.clone(),
+            });
+
+            job.lease_token = lease_token;
+            leased_jobs.push(job);
+        }
+
+        jobs = leased_jobs;
     }
 
     let dispatched_in_batch = jobs.len() as u64;
@@ -866,28 +966,67 @@ pub async fn contribute_fflogs_jobs_handler(
         );
     }
 
-    Ok(warp::reply::json(&jobs))
+    Ok(warp::reply::json(&jobs).into_response())
 }
 
 /// 플러그인으로부터 파싱 결과 수신
 pub async fn contribute_fflogs_results_handler(
     state: Arc<State>,
+    headers: HeaderMap,
     results: Vec<ParseResult>,
-) -> std::result::Result<impl Reply, Infallible> {
-    let results_in_batch = results.len() as u64;
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    let guard_ctx = match ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::ContributeFflogsResults,
+        &headers,
+        "POST",
+        "/contribute/fflogs/results",
+    )
+    .await
+    {
+        Ok(ctx) => ctx,
+        Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
+    };
+
+    let submitted_results_total = results.len();
+    if submitted_results_total > state.max_fflogs_results_batch_size {
+        return Ok(warp::reply::with_status("too many FFLogs results in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+    }
+
+    let mut accepted_results = Vec::with_capacity(submitted_results_total);
+    let mut lease_keys_to_release: Vec<super::FflogsLeaseKey> = Vec::new();
+
+    {
+        let leases = state.fflogs_job_leases.read().await;
+        for res in results {
+            let key = super::FflogsLeaseKey {
+                content_id: res.content_id,
+                zone_id: res.zone_id,
+                difficulty_id: res.difficulty_id,
+                partition: res.partition,
+            };
+
+            let Some(lease) = leases.get(&key) else {
+                continue;
+            };
+
+            if lease.client_id != guard_ctx.client_id {
+                continue;
+            }
+
+            if res.lease_token.is_empty() || lease.lease_token != res.lease_token {
+                continue;
+            }
+
+            lease_keys_to_release.push(key);
+            accepted_results.push(res);
+        }
+    }
+
+    let accepted_results_total = accepted_results.len() as u64;
     let mut success_count = 0;
 
-    let lease_keys: Vec<super::FflogsLeaseKey> = results
-        .iter()
-        .map(|r| super::FflogsLeaseKey {
-            content_id: r.content_id,
-            zone_id: r.zone_id,
-            difficulty_id: r.difficulty_id,
-            partition: r.partition,
-        })
-        .collect();
-
-    for res in results {
+    for res in accepted_results {
         // ParseResult -> ZoneCache 변환
         let boss_percentages = res.boss_percentages;
         let mut encounter_map = HashMap::new();
@@ -948,26 +1087,33 @@ pub async fn contribute_fflogs_results_handler(
     // release leases for returned results (success/failure both) so next polling can retry quickly
     {
         let mut leases = state.fflogs_job_leases.write().await;
-        for key in lease_keys {
+        for key in lease_keys_to_release {
             leases.remove(&key);
         }
     }
 
-    if results_in_batch > 0 {
+    if accepted_results_total > 0 {
         let results_total = state
             .fflogs_results_received_total
-            .fetch_add(results_in_batch, AtomicOrdering::Relaxed)
-            + results_in_batch;
+            .fetch_add(accepted_results_total, AtomicOrdering::Relaxed)
+            + accepted_results_total;
 
         tracing::debug!(
-            results_in_batch,
+            accepted_results_total,
+            submitted_results_total,
             success_count,
             results_total,
             "fflogs results processed",
         );
     }
 
-    Ok(warp::reply::json(&format!("Updated {} records", success_count)))
+    Ok(warp::reply::json(&format!(
+        "Updated {} records (accepted {}/{})",
+        success_count,
+        accepted_results_total,
+        submitted_results_total
+    ))
+    .into_response())
 }
 
 #[cfg(test)]

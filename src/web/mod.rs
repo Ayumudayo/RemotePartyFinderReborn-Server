@@ -24,6 +24,7 @@ use crate::stats::CachedStatistics;
 pub mod routes;
 pub mod handlers;
 pub mod background;
+pub mod ingest_guard;
 
 pub async fn start(config: Arc<Config>) -> Result<()> {
     let state = State::new(Arc::clone(&config)).await?;
@@ -44,8 +45,20 @@ pub struct State {
     pub fflogs_hidden_cache_ttl_hours: i64,
     pub listing_upsert_concurrency: usize,
     pub player_upsert_concurrency: usize,
+    pub max_body_bytes_contribute: u64,
+    pub max_body_bytes_multiple: u64,
+    pub max_body_bytes_players: u64,
+    pub max_body_bytes_detail: u64,
+    pub max_body_bytes_fflogs_results: u64,
+    pub max_multiple_batch_size: usize,
+    pub max_players_batch_size: usize,
+    pub max_fflogs_results_batch_size: usize,
+    pub max_detail_member_count: usize,
+    pub ingest_security: IngestSecurityConfig,
+    pub ingest_rate_windows: RwLock<HashMap<IngestRateKey, IngestRateWindow>>,
+    pub ingest_nonces: RwLock<HashMap<String, DateTime<Utc>>>,
     /// in-flight FFLogs job lease map to avoid duplicate dispatch across workers
-    pub fflogs_job_leases: RwLock<HashMap<FflogsLeaseKey, DateTime<Utc>>>,
+    pub fflogs_job_leases: RwLock<HashMap<FflogsLeaseKey, FflogsLeaseEntry>>,
     /// total number of FFLogs jobs dispatched to workers
     pub fflogs_jobs_dispatched_total: AtomicU64,
     /// total number of FFLogs result payload items received from workers
@@ -64,6 +77,44 @@ pub struct FflogsLeaseKey {
     pub partition: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct FflogsLeaseEntry {
+    pub leased_at: DateTime<Utc>,
+    pub client_id: String,
+    pub lease_token: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct IngestSecurityConfig {
+    pub require_signature: bool,
+    pub shared_secret: String,
+    pub clock_skew_seconds: i64,
+    pub nonce_ttl_seconds: i64,
+    pub rate_limits: IngestRateLimits,
+}
+
+#[derive(Debug, Clone)]
+pub struct IngestRateLimits {
+    pub contribute_per_minute: u32,
+    pub multiple_per_minute: u32,
+    pub players_per_minute: u32,
+    pub detail_per_minute: u32,
+    pub fflogs_jobs_per_minute: u32,
+    pub fflogs_results_per_minute: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IngestRateKey {
+    pub endpoint: &'static str,
+    pub client_id: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct IngestRateWindow {
+    pub window_started: DateTime<Utc>,
+    pub count: u32,
+}
+
 impl State {
     pub async fn new(config: Arc<Config>) -> Result<Arc<Self>> {
         let mongo = MongoClient::with_uri_str(&config.mongo.url)
@@ -79,6 +130,31 @@ impl State {
             fflogs_hidden_cache_ttl_hours: config.web.fflogs_hidden_cache_ttl_hours.max(1),
             listing_upsert_concurrency: config.web.listing_upsert_concurrency.max(1),
             player_upsert_concurrency: config.web.player_upsert_concurrency.max(1),
+            max_body_bytes_contribute: config.web.max_body_bytes_contribute.max(1024),
+            max_body_bytes_multiple: config.web.max_body_bytes_multiple.max(1024),
+            max_body_bytes_players: config.web.max_body_bytes_players.max(1024),
+            max_body_bytes_detail: config.web.max_body_bytes_detail.max(1024),
+            max_body_bytes_fflogs_results: config.web.max_body_bytes_fflogs_results.max(1024),
+            max_multiple_batch_size: config.web.max_multiple_batch_size.max(1),
+            max_players_batch_size: config.web.max_players_batch_size.max(1),
+            max_fflogs_results_batch_size: config.web.max_fflogs_results_batch_size.max(1),
+            max_detail_member_count: config.web.max_detail_member_count.max(1),
+            ingest_security: IngestSecurityConfig {
+                require_signature: config.web.ingest_require_signature,
+                shared_secret: config.web.ingest_shared_secret.clone(),
+                clock_skew_seconds: config.web.ingest_clock_skew_seconds.max(1),
+                nonce_ttl_seconds: config.web.ingest_nonce_ttl_seconds.max(1),
+                rate_limits: IngestRateLimits {
+                    contribute_per_minute: config.web.ingest_rate_limit_contribute_per_minute.max(1),
+                    multiple_per_minute: config.web.ingest_rate_limit_multiple_per_minute.max(1),
+                    players_per_minute: config.web.ingest_rate_limit_players_per_minute.max(1),
+                    detail_per_minute: config.web.ingest_rate_limit_detail_per_minute.max(1),
+                    fflogs_jobs_per_minute: config.web.ingest_rate_limit_fflogs_jobs_per_minute.max(1),
+                    fflogs_results_per_minute: config.web.ingest_rate_limit_fflogs_results_per_minute.max(1),
+                },
+            },
+            ingest_rate_windows: Default::default(),
+            ingest_nonces: Default::default(),
             fflogs_job_leases: Default::default(),
             fflogs_jobs_dispatched_total: Default::default(),
             fflogs_results_received_total: Default::default(),

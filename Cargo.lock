@@ -16,6 +16,7 @@ dependencies = [
  "chrono-humanize",
  "ffxiv_types",
  "futures-util",
+ "hmac",
  "lazy_static",
  "maplit",
  "mime",
@@ -25,12 +26,14 @@ dependencies = [
  "serde_json",
  "serde_repr",
  "sestring",
+ "sha2",
  "tokio",
  "tokio-stream",
  "toml 0.7.8",
  "tracing",
  "tracing-appender",
  "tracing-subscriber",
+ "uuid",
  "warp",
 ]
 

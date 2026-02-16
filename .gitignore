@@ -30,3 +30,8 @@ Claude.md
 logs/
 nul
 rustc-ice-*.txt
+
+# C# generator artifacts
+/RemotePartyFinderReborn-Server.sln
+/generator/obj/
+/generator/bin/

@@ -36,15 +36,55 @@ The server is built with:
 
     ```toml
     [web]
+
+    # Network
     host = "127.0.0.1:8000"
+
+    # FFLogs job scheduling
     fflogs_jobs_limit = 20
     fflogs_hidden_cache_ttl_hours = 24
+
+    # MongoDB write concurrency
     listing_upsert_concurrency = 16
     player_upsert_concurrency = 32
+
+    # Request body size limits (bytes)
+    max_body_bytes_contribute = 262144
+    max_body_bytes_multiple = 1048576
+    max_body_bytes_players = 524288
+    max_body_bytes_detail = 131072
+    max_body_bytes_fflogs_results = 524288
+
+    # Batch size limits (items per request)
+    max_multiple_batch_size = 200
+    max_players_batch_size = 100
+    max_fflogs_results_batch_size = 100
+    max_detail_member_count = 48
+
+    # Per-client rate limits (requests per minute)
+    ingest_rate_limit_contribute_per_minute = 120
+    ingest_rate_limit_multiple_per_minute = 60
+    ingest_rate_limit_players_per_minute = 120
+    ingest_rate_limit_detail_per_minute = 120
+    ingest_rate_limit_fflogs_jobs_per_minute = 30
+    ingest_rate_limit_fflogs_results_per_minute = 60
+
+    # Signature/replay protection
+    # Keep false for public plugin distribution; true is for controlled/private deployments.
+    ingest_require_signature = false
+    ingest_shared_secret = "rpf-reborn-public-ingest-v1"
+    ingest_clock_skew_seconds = 300
+    ingest_nonce_ttl_seconds = 300
 
     [mongo]
     url = "mongodb://localhost:27017/remote-party-finder"
     ```
+
+For signature-enforced operation, start from `config.secure.example.toml` instead.
+Set `ingest_shared_secret` to a strong random value and use the same value in the plugin's `IngestSharedSecret`.
+
+Recommended mode for public plugin distribution is `ingest_require_signature = false`.
+Shared-secret signatures are suitable for controlled/private deployments only; they are not strong client authentication for openly distributed binaries.
 
 ### Recommended Presets
 
@@ -59,6 +99,8 @@ Tune these four values together based on server capacity and contributor count:
 - Higher `fflogs_jobs_limit` increases refresh speed but raises FFLogs/API pressure.
 - Lower `fflogs_hidden_cache_ttl_hours` re-checks hidden characters sooner but increases query volume.
 - Increase upsert concurrency only if MongoDB has headroom; otherwise keep defaults.
+- `ingest_require_signature = true` enables HMAC+timestamp+nonce verification for `/contribute*` requests.
+- `ingest_rate_limit_*` limits are per client-id (header `X-RPF-Client-Id`) and return `429` with `Retry-After`.
 - Restart the server after editing `config.toml`.
 
 ### Running the Server
