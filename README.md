@@ -18,7 +18,7 @@ This is a fork of the [original Remote Party Finder project](https://github.com/
 
 The server is built with:
 - **Language**: Rust
-- **Web Framework**: Axum (implied, or specialized handler setup)
+- **Web Framework**: Warp
 - **Database**: MongoDB
 - **Templating**: Askama (HTML templates)
 
@@ -26,7 +26,7 @@ The server is built with:
 
 ### Prerequisites
 
-- **Rust** (Latest Stable)
+- **Rust** (Stable toolchain)
 - **MongoDB** (Running instance)
 
 ### Configuration
@@ -37,6 +37,10 @@ The server is built with:
     ```toml
     [web]
     host = "127.0.0.1:8000"
+    fflogs_jobs_limit = 20
+    fflogs_hidden_cache_ttl_hours = 24
+    listing_upsert_concurrency = 16
+    player_upsert_concurrency = 32
 
     [mongo]
     url = "mongodb://localhost:27017/remote-party-finder"
@@ -53,6 +57,20 @@ cargo run --release
 ```
 
 The server listens on `http://127.0.0.1:8000` by default.
+
+### Validation
+
+```bash
+# Type check on stable
+CARGO_INCREMENTAL=0 cargo +stable check
+
+# Targeted regression tests used by recent listings/member fixes
+CARGO_INCREMENTAL=0 cargo +stable test resolve_member_player
+```
+
+### Docker
+
+`Dockerfile` uses a stable Rust builder image (`rustlang/rust:stable-bookworm`).
 
 ## License
 
