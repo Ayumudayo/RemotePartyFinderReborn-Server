@@ -1,6 +1,6 @@
 # Use a multi-stage build to keep the final image small
 # 1. Builder stage (stable toolchain)
-FROM rustlang/rust:stable-bookworm as builder
+FROM rust:bookworm AS builder
 
 WORKDIR /usr/src/app
 
