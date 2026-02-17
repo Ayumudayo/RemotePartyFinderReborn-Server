@@ -61,55 +61,54 @@ impl PartyFinderListing {
     }
 
     pub fn slots(&self) -> Vec<std::result::Result<ClassJob, (String, String)>> {
-        let mut slots = Vec::with_capacity(self.slots_available as usize);
-        for i in 0..self.slots_available as usize {
-            if i >= self.jobs_present.len() {
-                break;
-            }
-
-            let cj = match crate::ffxiv::JOBS
-                .get(&u32::from(self.jobs_present[i]))
-                .copied()
-            {
-                Some(cj) => Ok(cj),
-                None => Err((self.slots[i].html_classes(), self.slots[i].codes())),
+        let limit = usize::min(self.slots_available as usize, self.jobs_present.len());
+        let mut slots = Vec::with_capacity(limit);
+        for index in 0..limit {
+            let present_job = self.jobs_present[index];
+            let entry = match crate::ffxiv::JOBS.get(&u32::from(present_job)).copied() {
+                Some(class_job) => Ok(class_job),
+                None => {
+                    let fallback_slot = &self.slots[index];
+                    Err((fallback_slot.html_classes(), fallback_slot.codes()))
+                }
             };
-            slots.push(cj);
+            slots.push(entry);
         }
 
         slots
     }
 
     pub fn joinable_roles(&self) -> u32 {
-        let one_player_per_job = self
+        let enforce_unique_jobs = self
             .search_area
             .contains(SearchAreaFlags::ONE_PLAYER_PER_JOB);
-        let mut jobs = JobFlags::empty();
-        let mut jobs_taken = JobFlags::empty();
-        for (i, present_job) in self.jobs_present.iter().copied().enumerate() {
-            if i >= self.slots_available as usize {
+        let mut joinable_flags = JobFlags::empty();
+        let mut occupied_flags = JobFlags::empty();
+
+        for (slot_index, present_job) in self.jobs_present.iter().copied().enumerate() {
+            if slot_index >= self.slots_available as usize {
                 break;
             }
 
-            match JOBS.get(&(present_job as u32)) {
+            match JOBS.get(&u32::from(present_job)) {
                 Some(cj) => {
-                    if let Some(job_taken) = JOBS_TO_FLAGS.get(cj.as_str()) {
-                        jobs_taken |= *job_taken
+                    if let Some(occupied) = JOBS_TO_FLAGS.get(cj.as_str()) {
+                        occupied_flags |= *occupied;
                     }
                 }
                 None => {
-                    if let Some(slot) = self.slots.get(i) {
-                        jobs |= slot.accepting
+                    if let Some(slot) = self.slots.get(slot_index) {
+                        joinable_flags |= slot.accepting;
                     }
                 }
             };
         }
 
-        if (one_player_per_job) {
-            jobs &= !jobs_taken
+        if enforce_unique_jobs {
+            joinable_flags &= !occupied_flags;
         }
 
-        jobs.bits()
+        joinable_flags.bits()
     }
 
     pub fn created_world(&self) -> Option<World> {
@@ -422,134 +421,90 @@ bitflags! {
 }
 
 impl JobFlags {
+    const ORDERED_FLAGS: [JobFlags; 31] = [
+        Self::GLADIATOR,
+        Self::PUGILIST,
+        Self::MARAUDER,
+        Self::LANCER,
+        Self::ARCHER,
+        Self::CONJURER,
+        Self::THAUMATURGE,
+        Self::PALADIN,
+        Self::MONK,
+        Self::WARRIOR,
+        Self::DRAGOON,
+        Self::BARD,
+        Self::WHITE_MAGE,
+        Self::BLACK_MAGE,
+        Self::ARCANIST,
+        Self::SUMMONER,
+        Self::SCHOLAR,
+        Self::ROGUE,
+        Self::NINJA,
+        Self::MACHINIST,
+        Self::DARK_KNIGHT,
+        Self::ASTROLOGIAN,
+        Self::SAMURAI,
+        Self::RED_MAGE,
+        Self::BLUE_MAGE,
+        Self::GUNBREAKER,
+        Self::DANCER,
+        Self::REAPER,
+        Self::SAGE,
+        Self::VIPER,
+        Self::PICTOMANCER,
+    ];
+
+    fn classjob_for_flag(flag: JobFlags) -> Option<ClassJob> {
+        Some(match flag {
+            Self::GLADIATOR => ClassJob::Class(Class::Gladiator),
+            Self::PUGILIST => ClassJob::Class(Class::Pugilist),
+            Self::MARAUDER => ClassJob::Class(Class::Marauder),
+            Self::LANCER => ClassJob::Class(Class::Lancer),
+            Self::ARCHER => ClassJob::Class(Class::Archer),
+            Self::CONJURER => ClassJob::Class(Class::Conjurer),
+            Self::THAUMATURGE => ClassJob::Class(Class::Thaumaturge),
+            Self::PALADIN => ClassJob::Job(Job::Paladin),
+            Self::MONK => ClassJob::Job(Job::Monk),
+            Self::WARRIOR => ClassJob::Job(Job::Warrior),
+            Self::DRAGOON => ClassJob::Job(Job::Dragoon),
+            Self::BARD => ClassJob::Job(Job::Bard),
+            Self::WHITE_MAGE => ClassJob::Job(Job::WhiteMage),
+            Self::BLACK_MAGE => ClassJob::Job(Job::BlackMage),
+            Self::ARCANIST => ClassJob::Class(Class::Arcanist),
+            Self::SUMMONER => ClassJob::Job(Job::Summoner),
+            Self::SCHOLAR => ClassJob::Job(Job::Scholar),
+            Self::ROGUE => ClassJob::Class(Class::Rogue),
+            Self::NINJA => ClassJob::Job(Job::Ninja),
+            Self::MACHINIST => ClassJob::Job(Job::Machinist),
+            Self::DARK_KNIGHT => ClassJob::Job(Job::DarkKnight),
+            Self::ASTROLOGIAN => ClassJob::Job(Job::Astrologian),
+            Self::SAMURAI => ClassJob::Job(Job::Samurai),
+            Self::RED_MAGE => ClassJob::Job(Job::RedMage),
+            Self::BLUE_MAGE => ClassJob::Job(Job::BlueMage),
+            Self::GUNBREAKER => ClassJob::Job(Job::Gunbreaker),
+            Self::DANCER => ClassJob::Job(Job::Dancer),
+            Self::REAPER => ClassJob::Job(Job::Reaper),
+            Self::SAGE => ClassJob::Job(Job::Sage),
+            Self::VIPER => ClassJob::Job(Job::Viper),
+            Self::PICTOMANCER => ClassJob::Job(Job::Pictomancer),
+            _ => return None,
+        })
+    }
+
     pub fn classjobs(&self) -> Vec<ClassJob> {
-        let mut cjs = Vec::new();
+        let mut class_jobs = Vec::new();
+        for flag in Self::ORDERED_FLAGS {
+            if !self.contains(flag) {
+                continue;
+            }
 
-        if self.contains(Self::GLADIATOR) {
-            cjs.push(ClassJob::Class(Class::Gladiator));
+            if let Some(class_job) = Self::classjob_for_flag(flag) {
+                class_jobs.push(class_job);
+            }
         }
 
-        if self.contains(Self::PUGILIST) {
-            cjs.push(ClassJob::Class(Class::Pugilist));
-        }
-
-        if self.contains(Self::MARAUDER) {
-            cjs.push(ClassJob::Class(Class::Marauder));
-        }
-
-        if self.contains(Self::LANCER) {
-            cjs.push(ClassJob::Class(Class::Lancer));
-        }
-
-        if self.contains(Self::ARCHER) {
-            cjs.push(ClassJob::Class(Class::Archer));
-        }
-
-        if self.contains(Self::CONJURER) {
-            cjs.push(ClassJob::Class(Class::Conjurer));
-        }
-
-        if self.contains(Self::THAUMATURGE) {
-            cjs.push(ClassJob::Class(Class::Thaumaturge));
-        }
-
-        if self.contains(Self::PALADIN) {
-            cjs.push(ClassJob::Job(Job::Paladin));
-        }
-
-        if self.contains(Self::MONK) {
-            cjs.push(ClassJob::Job(Job::Monk));
-        }
-
-        if self.contains(Self::WARRIOR) {
-            cjs.push(ClassJob::Job(Job::Warrior));
-        }
-
-        if self.contains(Self::DRAGOON) {
-            cjs.push(ClassJob::Job(Job::Dragoon));
-        }
-
-        if self.contains(Self::BARD) {
-            cjs.push(ClassJob::Job(Job::Bard));
-        }
-
-        if self.contains(Self::WHITE_MAGE) {
-            cjs.push(ClassJob::Job(Job::WhiteMage));
-        }
-
-        if self.contains(Self::BLACK_MAGE) {
-            cjs.push(ClassJob::Job(Job::BlackMage));
-        }
-
-        if self.contains(Self::ARCANIST) {
-            cjs.push(ClassJob::Class(Class::Arcanist));
-        }
-
-        if self.contains(Self::SUMMONER) {
-            cjs.push(ClassJob::Job(Job::Summoner));
-        }
-
-        if self.contains(Self::SCHOLAR) {
-            cjs.push(ClassJob::Job(Job::Scholar));
-        }
-
-        if self.contains(Self::ROGUE) {
-            cjs.push(ClassJob::Class(Class::Rogue));
-        }
-
-        if self.contains(Self::NINJA) {
-            cjs.push(ClassJob::Job(Job::Ninja));
-        }
-
-        if self.contains(Self::MACHINIST) {
-            cjs.push(ClassJob::Job(Job::Machinist));
-        }
-
-        if self.contains(Self::DARK_KNIGHT) {
-            cjs.push(ClassJob::Job(Job::DarkKnight));
-        }
-
-        if self.contains(Self::ASTROLOGIAN) {
-            cjs.push(ClassJob::Job(Job::Astrologian));
-        }
-
-        if self.contains(Self::SAMURAI) {
-            cjs.push(ClassJob::Job(Job::Samurai));
-        }
-
-        if self.contains(Self::RED_MAGE) {
-            cjs.push(ClassJob::Job(Job::RedMage));
-        }
-
-        if self.contains(Self::BLUE_MAGE) {
-            cjs.push(ClassJob::Job(Job::BlueMage));
-        }
-
-        if self.contains(Self::GUNBREAKER) {
-            cjs.push(ClassJob::Job(Job::Gunbreaker));
-        }
-
-        if self.contains(Self::DANCER) {
-            cjs.push(ClassJob::Job(Job::Dancer));
-        }
-
-        if self.contains(Self::REAPER) {
-            cjs.push(ClassJob::Job(Job::Reaper));
-        }
-
-        if self.contains(Self::SAGE) {
-            cjs.push(ClassJob::Job(Job::Sage));
-        }
-
-        if self.contains(Self::VIPER) {
-            cjs.push(ClassJob::Job(Job::Viper));
-        }
-
-        if self.contains(Self::PICTOMANCER) {
-            cjs.push(ClassJob::Job(Job::Pictomancer));
-        }
-
-        cjs
+        class_jobs
     }
 
     pub fn html_classes(&self) -> String {

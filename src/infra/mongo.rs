@@ -1,12 +1,51 @@
+use std::collections::HashMap;
+
 use anyhow::Context;
-use crate::listing::PartyFinderListing;
-use crate::listing_container::{ListingContainer, QueriedListing};
 use chrono::{TimeDelta, Utc};
 use futures_util::StreamExt;
-use mongodb::bson::doc;
-use mongodb::results::UpdateResult;
-use mongodb::Collection;
-use mongodb::options::UpdateOptions;
+use mongodb::{
+    bson::{doc, Document},
+    options::UpdateOptions,
+    results::UpdateResult,
+    Collection,
+};
+
+use crate::listing::PartyFinderListing;
+use crate::listing_container::{ListingContainer, QueriedListing};
+
+fn is_valid_world_id(world_id: u16) -> bool {
+    world_id < 1_000
+}
+
+fn strip_detail_managed_listing_fields(listing_doc: &mut Document) {
+    listing_doc.remove("member_content_ids");
+    listing_doc.remove("member_jobs");
+    listing_doc.remove("leader_content_id");
+}
+
+fn listing_upsert_filter(listing: &PartyFinderListing) -> Document {
+    doc! {
+        "listing.id": listing.id,
+        "listing.last_server_restart": listing.last_server_restart,
+        "listing.created_world": listing.created_world as u32,
+    }
+}
+
+fn listing_upsert_update(mut listing_doc: Document) -> Vec<Document> {
+    strip_detail_managed_listing_fields(&mut listing_doc);
+    vec![doc! {
+        "$set": {
+            "updated_at": "$$NOW",
+            "created_at": { "$ifNull": ["$created_at", "$$NOW"] },
+            "listing": {
+                "$mergeObjects": [
+                    "$listing",
+                    listing_doc,
+                ]
+            },
+        }
+    }]
+}
 
 pub async fn get_current_listings(
     collection: Collection<ListingContainer>,
@@ -15,20 +54,6 @@ pub async fn get_current_listings(
     let cursor = collection
         .aggregate(
             [
-                // don't ask me why, but mongo shits itself unless you provide a hard date
-                // doc! {
-                //     "$match": {
-                //         "created_at": {
-                //             "$gte": {
-                //                 "$dateSubtract": {
-                //                     "startDate": "$$NOW",
-                //                     "unit": "hour",
-                //                     "amount": 2,
-                //                 },
-                //             },
-                //         },
-                //     }
-                // },
                 doc! {
                     "$match": {
                         "updated_at": { "$gte": one_hour_ago },
@@ -36,7 +61,6 @@ pub async fn get_current_listings(
                 },
                 doc! {
                     "$match": {
-                        // filter private pfs
                         "listing.search_area": { "$bitsAllClear": 2 },
                     }
                 },
@@ -72,149 +96,125 @@ pub async fn get_current_listings(
         )
         .await?;
 
-    let collect = cursor
-        .filter_map(async |res| {
-            res.ok()
-                .and_then(|doc| mongodb::bson::from_document(doc).ok())
+    let listings = cursor
+        .filter_map(async |result| {
+            result
+                .ok()
+                .and_then(|raw| mongodb::bson::from_document(raw).ok())
         })
         .collect::<Vec<_>>()
         .await;
 
-    Ok(collect)
+    Ok(listings)
 }
 
 pub async fn insert_listing(
     collection: Collection<ListingContainer>,
     listing: &PartyFinderListing,
 ) -> anyhow::Result<UpdateResult> {
-    if listing.created_world >= 1_000
-        || listing.home_world >= 1_000
-        || listing.current_world >= 1_000
+    if !is_valid_world_id(listing.created_world)
+        || !is_valid_world_id(listing.home_world)
+        || !is_valid_world_id(listing.current_world)
     {
         anyhow::bail!("invalid listing");
     }
 
-    let opts = UpdateOptions::builder().upsert(true).build();
-    let mut listing_doc = mongodb::bson::to_document(&listing)?;
-    listing_doc.remove("member_content_ids");
-    listing_doc.remove("member_jobs");
-    listing_doc.remove("leader_content_id");
+    let listing_doc = mongodb::bson::to_document(listing)?;
+    let filter = listing_upsert_filter(listing);
+    let update = listing_upsert_update(listing_doc);
+    let options = UpdateOptions::builder().upsert(true).build();
 
     collection
-        .update_one(
-            doc! {
-                "listing.id": listing.id,
-                "listing.last_server_restart": listing.last_server_restart,
-                "listing.created_world": listing.created_world as u32,
-            },
-            vec![doc! {
-                "$set": {
-                    "updated_at": "$$NOW",
-                    "created_at": { "$ifNull": ["$created_at", "$$NOW"] },
-                    "listing": {
-                        "$mergeObjects": [
-                            "$listing",
-                            listing_doc,
-                        ]
-                    },
-                }
-            }],
-            opts,
-        )
+        .update_one(filter, update, options)
         .await
         .context("could not insert record")
 }
 
-/// 플레이어 정보를 upsert (있으면 업데이트, 없으면 삽입)
+#[derive(Clone)]
+struct PreparedPlayerUpsert {
+    content_id: u64,
+    name: String,
+    home_world: u16,
+    current_world: u16,
+    account_id: String,
+}
+
+fn prepare_player_upsert(player: &crate::player::UploadablePlayer) -> Option<PreparedPlayerUpsert> {
+    if player.content_id == 0 || player.name.is_empty() || !is_valid_world_id(player.home_world) {
+        return None;
+    }
+
+    let current_world = if is_valid_world_id(player.current_world) {
+        player.current_world
+    } else {
+        0
+    };
+
+    let account_id = if player.account_id != 0 {
+        player.account_id.to_string()
+    } else {
+        "-1".to_string()
+    };
+
+    Some(PreparedPlayerUpsert {
+        content_id: player.content_id,
+        name: player.name.clone(),
+        home_world: player.home_world,
+        current_world,
+        account_id,
+    })
+}
+
 pub async fn upsert_players(
     collection: Collection<crate::player::Player>,
     players: &[crate::player::UploadablePlayer],
     concurrency: usize,
 ) -> anyhow::Result<usize> {
-    let mut successful = 0;
-
-    #[derive(Clone)]
-    struct PlayerUpsertOp {
-        content_id: u64,
-        name: String,
-        home_world: u16,
-        current_world: u16,
-        account_id: String,
-    }
-
-    let mut ops = Vec::new();
-    for player in players {
-        if player.content_id == 0 || player.name.is_empty() || player.home_world >= 1_000 {
-            continue;
-        }
-
-        let current_world = if player.current_world < 1_000 {
-            player.current_world
-        } else {
-            0
-        };
-
-        let account_id = if player.account_id != 0 {
-            player.account_id.to_string()
-        } else {
-            "-1".to_string()
-        };
-
-        ops.push(PlayerUpsertOp {
-            content_id: player.content_id,
-            name: player.name.clone(),
-            home_world: player.home_world,
-            current_world,
-            account_id,
-        });
-    }
+    let prepared = players
+        .iter()
+        .filter_map(prepare_player_upsert)
+        .collect::<Vec<_>>();
 
     let now = Utc::now();
+    let mut successful = 0usize;
 
-    let mut writes = futures_util::stream::iter(
-        ops.into_iter().map(|op| {
-                let collection = collection.clone();
-                let now = now.clone();
-                async move {
-                    let mut set_doc = doc! {
-                        "account_id": op.account_id,
-                        "name": op.name,
-                        "last_seen": now,
-                    };
+    let mut writes = futures_util::stream::iter(prepared.into_iter().map(|op| {
+        let collection = collection.clone();
+        let now = now.clone();
+        async move {
+            let mut set_doc = doc! {
+                "account_id": op.account_id,
+                "name": op.name,
+                "last_seen": now,
+            };
 
-                    // home_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
-                    // (NameCache 기반 업로드는 월드를 모를 수 있으므로, 0으로 다운그레이드되는 것을 방지)
-                    if op.home_world != 0 {
-                        set_doc.insert("home_world", op.home_world as u32);
-                    }
+            if op.home_world != 0 {
+                set_doc.insert("home_world", op.home_world as u32);
+            }
 
-                    // current_world == 0 은 "unknown"으로 취급하고 기존 값이 있으면 덮어쓰지 않음.
-                    if op.current_world != 0 {
-                        set_doc.insert("current_world", op.current_world as u32);
-                    }
+            if op.current_world != 0 {
+                set_doc.insert("current_world", op.current_world as u32);
+            }
 
-                    let set_on_insert_doc = doc! {
-                        "content_id": op.content_id as i64,
-                        // 신규 insert 시에는 unknown(0)도 그대로 저장
-                        "home_world": op.home_world as u32,
-                        "current_world": op.current_world as u32,
-                    };
+            let set_on_insert_doc = doc! {
+                "content_id": op.content_id as i64,
+                "home_world": op.home_world as u32,
+                "current_world": op.current_world as u32,
+            };
 
-                    let opts = UpdateOptions::builder().upsert(true).build();
-                    collection
-                        .update_one(
-                            doc! { "content_id": op.content_id as i64 },
-                            doc! {
-                                "$set": set_doc,
-                                "$inc": { "seen_count": 1 },
-                                "$setOnInsert": set_on_insert_doc,
-                            },
-                            opts,
-                        )
-                        .await
-                }
-            }),
-    )
+            collection
+                .update_one(
+                    doc! { "content_id": op.content_id as i64 },
+                    doc! {
+                        "$set": set_doc,
+                        "$inc": { "seen_count": 1 },
+                        "$setOnInsert": set_on_insert_doc,
+                    },
+                    UpdateOptions::builder().upsert(true).build(),
+                )
+                .await
+        }
+    }))
     .buffer_unordered(concurrency.max(1));
 
     while let Some(result) = writes.next().await {
@@ -226,25 +226,21 @@ pub async fn upsert_players(
     Ok(successful)
 }
 
-/// ContentID 목록으로 플레이어 정보 조회
 pub async fn get_players_by_content_ids(
     collection: Collection<crate::player::Player>,
     content_ids: &[u64],
 ) -> anyhow::Result<Vec<crate::player::Player>> {
-    let ids: Vec<i64> = content_ids.iter().map(|&id| id as i64).collect();
-    
+    let as_i64 = content_ids.iter().map(|id| *id as i64).collect::<Vec<_>>();
     let cursor = collection
-        .find(doc! { "content_id": { "$in": ids } }, None)
+        .find(doc! { "content_id": { "$in": as_i64 } }, None)
         .await?;
 
     let players = cursor
-        .filter_map(async |res| {
-            match res {
-                Ok(p) => Some(p),
-                Err(e) => {
-                    tracing::warn!("Error reading player: {:?}", e);
-                    None
-                }
+        .filter_map(async |result| match result {
+            Ok(player) => Some(player),
+            Err(error) => {
+                tracing::warn!("Error reading player: {:?}", error);
+                None
             }
         })
         .collect::<Vec<_>>()
@@ -253,125 +249,98 @@ pub async fn get_players_by_content_ids(
     Ok(players)
 }
 
-/// 최근 활성 플레이어 전체 조회 (last_seen 7일 이내)
 pub async fn get_all_active_players(
     collection: Collection<crate::player::Player>,
 ) -> anyhow::Result<Vec<crate::player::Player>> {
     let seven_days_ago = Utc::now() - TimeDelta::try_days(7).unwrap();
-    
     let cursor = collection
         .find(doc! { "last_seen": { "$gte": seven_days_ago } }, None)
         .await?;
 
     let players = cursor
-        .filter_map(async |res| res.ok())
+        .filter_map(async |result| result.ok())
         .collect::<Vec<_>>()
         .await;
 
     Ok(players)
 }
 
-// =============================================================================
-// FFLogs Parse 캐시 (타입은 fflogs::cache에 정의됨)
-// =============================================================================
-
-use std::collections::HashMap;
 pub use crate::fflogs::cache::{
-    ParseCacheDoc,
-    ZoneCache,
-    EncounterParse,
     is_zone_cache_expired,
     is_zone_cache_expired_with_hidden_ttl_hours,
+    EncounterParse,
+    ParseCacheDoc,
+    ZoneCache,
 };
 
-/// 플레이어의 특정 Zone 캐시 조회
 pub async fn get_zone_cache(
     collection: Collection<ParseCacheDoc>,
     content_id: u64,
     zone_key: &str,
 ) -> anyhow::Result<Option<ZoneCache>> {
-    let doc = collection
-        .find_one(
-            doc! { "content_id": content_id as i64 },
-            None,
-        )
+    let cache_doc = collection
+        .find_one(doc! { "content_id": content_id as i64 }, None)
         .await?;
-    
-    Ok(doc.and_then(|d| d.zones.get(zone_key).cloned()))
+
+    Ok(cache_doc.and_then(|doc| doc.zones.get(zone_key).cloned()))
 }
 
-/// 여러 플레이어의 특정 Zone 캐시 일괄 조회
 pub async fn get_zone_caches(
     collection: Collection<ParseCacheDoc>,
     content_ids: &[u64],
     zone_key: &str,
 ) -> anyhow::Result<HashMap<u64, ZoneCache>> {
-    let ids: Vec<i64> = content_ids.iter().map(|&id| id as i64).collect();
-    
+    let ids = content_ids.iter().map(|id| *id as i64).collect::<Vec<_>>();
     let cursor = collection
-        .find(
-            doc! { "content_id": { "$in": ids } },
-            None,
-        )
+        .find(doc! { "content_id": { "$in": ids } }, None)
         .await?;
-    
-    let docs: Vec<ParseCacheDoc> = cursor
-        .filter_map(async |res| res.ok())
+
+    let docs = cursor
+        .filter_map(async |result| result.ok())
         .collect::<Vec<_>>()
         .await;
-    
-    let mut result = HashMap::new();
+
+    let mut caches = HashMap::new();
     for doc in docs {
         if let Some(zone_cache) = doc.zones.get(zone_key) {
-            result.insert(doc.content_id as u64, zone_cache.clone());
+            caches.insert(doc.content_id as u64, zone_cache.clone());
         }
     }
-    
-    Ok(result)
+
+    Ok(caches)
 }
 
-/// 여러 플레이어의 전체 Parse 데이터 일괄 조회 (배치 최적화용)
 pub async fn get_parse_docs(
     collection: Collection<ParseCacheDoc>,
     content_ids: &[u64],
 ) -> anyhow::Result<HashMap<u64, ParseCacheDoc>> {
-    let ids: Vec<i64> = content_ids.iter().map(|&id| id as i64).collect();
-    
+    let ids = content_ids.iter().map(|id| *id as i64).collect::<Vec<_>>();
     let cursor = collection
-        .find(
-            doc! { "content_id": { "$in": ids } },
-            None,
-        )
+        .find(doc! { "content_id": { "$in": ids } }, None)
         .await?;
-    
-    let docs: Vec<ParseCacheDoc> = cursor
-        .filter_map(async |res| res.ok())
+
+    let docs = cursor
+        .filter_map(async |result| result.ok())
         .collect::<Vec<_>>()
         .await;
-    
-    let mut result = HashMap::new();
+
+    let mut parse_docs = HashMap::new();
     for doc in docs {
-        result.insert(doc.content_id as u64, doc);
+        parse_docs.insert(doc.content_id as u64, doc);
     }
-    
-    Ok(result)
+
+    Ok(parse_docs)
 }
 
-/// Zone 전체 캐시 저장/업데이트
-/// 
-/// content_id 문서가 없으면 생성, 있으면 해당 zone만 갱신
 pub async fn upsert_zone_cache(
     collection: Collection<ParseCacheDoc>,
     content_id: u64,
     zone_key: &str,
     zone_cache: &ZoneCache,
 ) -> anyhow::Result<()> {
-    let opts = UpdateOptions::builder().upsert(true).build();
     let zone_path = format!("zones.{}", zone_key);
-    
-    // BSON으로 변환
     let zone_bson = mongodb::bson::to_bson(zone_cache)?;
-    
+
     collection
         .update_one(
             doc! { "content_id": content_id as i64 },
@@ -379,13 +348,9 @@ pub async fn upsert_zone_cache(
                 "$set": { &zone_path: zone_bson },
                 "$setOnInsert": { "content_id": content_id as i64 },
             },
-            opts,
+            UpdateOptions::builder().upsert(true).build(),
         )
         .await?;
-    
+
     Ok(())
 }
-
-// Note: 유저 요청에 따라 Parse 데이터에 대한 자동 삭제(TTL) 로직은 제거함.
-// 데이터는 오직 갱신(overwrite)만 되며, 유실되지 않음.
-

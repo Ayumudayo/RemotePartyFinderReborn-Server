@@ -12,7 +12,7 @@ use warp::{
     http::{HeaderMap, StatusCode},
 };
 use futures_util::StreamExt;
-use mongodb::{bson::doc, options::UpdateOptions};
+use mongodb::{bson::{doc, Document}, options::UpdateOptions};
 use chrono::{TimeDelta, Utc};
 use uuid::Uuid;
 
@@ -478,14 +478,50 @@ pub async fn contribute_handler(
     }
 
     if listing.seconds_remaining > 60 * 60 {
-        return Ok(warp::reply::with_status("invalid listing", StatusCode::BAD_REQUEST).into_response());
+        return Ok(
+            warp::reply::with_status("invalid listing", StatusCode::BAD_REQUEST).into_response(),
+        );
     }
 
-    let result = insert_listing(state.collection(), &listing).await;
+    let upsert_result = insert_listing(state.collection(), &listing).await;
 
-    // publish listings to websockets
-    let _ = state.listings_channel.send(vec![listing].into()); 
-    Ok(format!("{:#?}", result).into_response())
+    let _ = state.listings_channel.send(vec![listing].into());
+    Ok(format!("{:#?}", upsert_result).into_response())
+}
+
+fn is_listing_acceptable(listing: &PartyFinderListing) -> bool {
+    if listing.seconds_remaining > 60 * 60 {
+        return false;
+    }
+
+    listing.created_world < 1_000 && listing.home_world < 1_000 && listing.current_world < 1_000
+}
+
+fn build_listing_upsert(listing: &PartyFinderListing) -> anyhow::Result<(u32, Document, Vec<Document>)> {
+    let mut listing_doc = mongodb::bson::to_document(listing)?;
+    listing_doc.remove("member_content_ids");
+    listing_doc.remove("member_jobs");
+    listing_doc.remove("leader_content_id");
+
+    let filter = doc! {
+        "listing.id": listing.id,
+        "listing.last_server_restart": listing.last_server_restart,
+        "listing.created_world": listing.created_world as u32,
+    };
+    let update = vec![doc! {
+        "$set": {
+            "updated_at": "$$NOW",
+            "created_at": { "$ifNull": ["$created_at", "$$NOW"] },
+            "listing": {
+                "$mergeObjects": [
+                    "$listing",
+                    listing_doc,
+                ]
+            },
+        }
+    }];
+
+    Ok((listing.id, filter, update))
 }
 
 pub async fn contribute_multiple_handler(
@@ -507,79 +543,44 @@ pub async fn contribute_multiple_handler(
 
     let total = listings.len();
     if total > state.max_multiple_batch_size {
-        return Ok(warp::reply::with_status("too many listings in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+        return Ok(warp::reply::with_status(
+            "too many listings in request",
+            StatusCode::PAYLOAD_TOO_LARGE,
+        )
+        .into_response());
     }
 
-    let mut successful = 0;
-
-    let mut write_ops = Vec::new();
+    let mut upserts = Vec::new();
     for listing in &listings {
-        if listing.seconds_remaining > 60 * 60 {
+        if !is_listing_acceptable(listing) {
             continue;
         }
 
-        if listing.created_world >= 1_000
-            || listing.home_world >= 1_000
-            || listing.current_world >= 1_000
-        {
-            continue;
-        }
-
-        let mut listing_doc = match mongodb::bson::to_document(listing) {
-            Ok(v) => v,
-            Err(e) => {
-                tracing::warn!("Failed to serialize listing {}: {:#?}", listing.id, e);
-                continue;
+        match build_listing_upsert(listing) {
+            Ok(op) => upserts.push(op),
+            Err(error) => {
+                tracing::warn!("Failed to serialize listing {}: {:#?}", listing.id, error);
             }
-        };
-
-        // Preserve detail-derived fields populated by /contribute/detail.
-        listing_doc.remove("member_content_ids");
-        listing_doc.remove("member_jobs");
-        listing_doc.remove("leader_content_id");
-
-        let filter = doc! {
-            "listing.id": listing.id,
-            "listing.last_server_restart": listing.last_server_restart,
-            "listing.created_world": listing.created_world as u32,
-        };
-        let update = vec![
-            doc! {
-                "$set": {
-                    "updated_at": "$$NOW",
-                    "created_at": { "$ifNull": ["$created_at", "$$NOW"] },
-                    "listing": {
-                        "$mergeObjects": [
-                            "$listing",
-                            listing_doc,
-                        ]
-                    },
-                }
-            },
-        ];
-        write_ops.push((listing.id, filter, update));
+        }
     }
 
-    let mut writes = futures_util::stream::iter(
-        write_ops
-            .into_iter()
-            .map(|(listing_id, filter, update)| {
-                let collection = state.collection();
-                async move {
-                    collection
-                        .update_one(filter, update, UpdateOptions::builder().upsert(true).build())
-                        .await
-                        .map_err(|e| (listing_id, e))
-                }
-            }),
-    )
+    let mut successful = 0usize;
+    let mut writes = futures_util::stream::iter(upserts.into_iter().map(|(listing_id, filter, update)| {
+        let collection = state.collection();
+        async move {
+            collection
+                .update_one(filter, update, UpdateOptions::builder().upsert(true).build())
+                .await
+                .map_err(|error| (listing_id, error))
+        }
+    }))
     .buffer_unordered(state.listing_upsert_concurrency);
 
-    while let Some(result) = writes.next().await {
-        match result {
+    while let Some(write_result) = writes.next().await {
+        match write_result {
             Ok(_) => successful += 1,
-            Err((listing_id, e)) => {
-                tracing::warn!("Failed to insert listing {}: {:#?}", listing_id, e);
+            Err((listing_id, error)) => {
+                tracing::warn!("Failed to insert listing {}: {:#?}", listing_id, error);
             }
         }
     }
@@ -645,6 +646,71 @@ struct ContributeDetailResponse {
     modified_count: u64,
 }
 
+fn build_detail_update_doc(detail: &UploadablePartyDetail) -> Document {
+    let member_ids_i64 = detail
+        .member_content_ids
+        .iter()
+        .map(|id| *id as i64)
+        .collect::<Vec<_>>();
+
+    let mut set_doc = doc! {
+        "listing.member_content_ids": member_ids_i64,
+        "listing.leader_content_id": detail.leader_content_id as i64,
+    };
+
+    if let Some(member_jobs) = detail.member_jobs.as_ref() {
+        let member_jobs_i32 = member_jobs
+            .iter()
+            .map(|job| i32::from(*job))
+            .collect::<Vec<_>>();
+        set_doc.insert("listing.member_jobs", member_jobs_i32);
+    }
+
+    set_doc
+}
+
+fn detail_payload_is_too_large(detail: &UploadablePartyDetail, limit: usize) -> Option<&'static str> {
+    if detail.member_content_ids.len() > limit {
+        return Some("too many members in request");
+    }
+
+    if let Some(member_jobs) = detail.member_jobs.as_ref() {
+        if member_jobs.len() > limit {
+            return Some("too many member jobs in request");
+        }
+    }
+
+    None
+}
+
+async fn upsert_detail_leader_if_valid(state: &State, detail: &UploadablePartyDetail) {
+    if detail.leader_content_id != 0 && !detail.leader_name.is_empty() && detail.home_world < 1000 {
+        let leader = crate::player::UploadablePlayer {
+            content_id: detail.leader_content_id,
+            name: detail.leader_name.clone(),
+            home_world: detail.home_world,
+            current_world: 0,
+            account_id: 0,
+        };
+
+        let result = upsert_players(
+            state.players_collection(),
+            &[leader],
+            state.player_upsert_concurrency,
+        )
+        .await;
+        tracing::debug!("Upserted leader {}: {:?}", detail.leader_content_id, result);
+        return;
+    }
+
+    tracing::debug!(
+        "Skipping leader upsert: ID={} Name='{}' World={}",
+        detail.leader_content_id,
+        detail.leader_name,
+        detail.home_world,
+    );
+}
+
 pub async fn contribute_detail_handler(
     state: Arc<State>,
     headers: HeaderMap,
@@ -662,22 +728,22 @@ pub async fn contribute_detail_handler(
         return Ok(ingest_guard::guard_error_reply(error));
     }
 
-    if detail.member_content_ids.len() > state.max_detail_member_count {
-        return Ok(warp::reply::with_status("too many members in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+    if let Some(message) = detail_payload_is_too_large(&detail, state.max_detail_member_count) {
+        return Ok(
+            warp::reply::with_status(message, StatusCode::PAYLOAD_TOO_LARGE).into_response(),
+        );
     }
 
-    if let Some(member_jobs) = detail.member_jobs.as_ref() {
-        if member_jobs.len() > state.max_detail_member_count {
-            return Ok(warp::reply::with_status("too many member jobs in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
-        }
-    }
-
-    let non_zero_member_count = detail.member_content_ids.iter().filter(|&&id| id != 0).count();
+    let non_zero_member_count = detail
+        .member_content_ids
+        .iter()
+        .filter(|id| **id != 0)
+        .count();
     let member_jobs_len = detail.member_jobs.as_ref().map_or(0, |jobs| jobs.len());
     let non_zero_job_count = detail
         .member_jobs
         .as_ref()
-        .map_or(0, |jobs| jobs.iter().filter(|&&job| job != 0).count());
+        .map_or(0, |jobs| jobs.iter().filter(|job| **job != 0).count());
     tracing::debug!(
         listing_id = detail.listing_id,
         member_count = detail.member_content_ids.len(),
@@ -687,44 +753,14 @@ pub async fn contribute_detail_handler(
         "received party detail payload"
     );
 
-    // 리더 정보를 플레이어로 저장
-    if detail.leader_content_id != 0 && !detail.leader_name.is_empty() && detail.home_world < 1000 {
-        let leader = crate::player::UploadablePlayer {
-            content_id: detail.leader_content_id,
-            name: detail.leader_name.clone(),
-            home_world: detail.home_world,
-            current_world: 0,
-            account_id: 0, // UploadablePlayer는 u64 유지
-        };
-        let upsert_res = upsert_players(
-            state.players_collection(),
-            &[leader],
-            state.player_upsert_concurrency,
-        )
-        .await;
-        tracing::debug!("Upserted leader {}: {:?}", detail.leader_content_id, upsert_res);
-    } else {
-        tracing::debug!("Skipping leader upsert: ID={} Name='{}' World={}", detail.leader_content_id, detail.leader_name, detail.home_world);
-    }
+    upsert_detail_leader_if_valid(&state, &detail).await;
 
-    // listing에 member_content_ids 및 leader_content_id 저장
-    let member_ids_i64: Vec<i64> = detail.member_content_ids.iter().map(|&id| id as i64).collect();
-    let mut set_doc = doc! {
-        "listing.member_content_ids": member_ids_i64,
-        "listing.leader_content_id": detail.leader_content_id as i64,
-    };
-
-    if let Some(member_jobs) = detail.member_jobs.as_ref() {
-        let member_jobs_i32: Vec<i32> = member_jobs.iter().map(|&job| i32::from(job)).collect();
-        set_doc.insert("listing.member_jobs", member_jobs_i32);
-    }
-
-    let update_result = state.collection()
+    let set_doc = build_detail_update_doc(&detail);
+    let update_result = state
+        .collection()
         .update_one(
             doc! { "listing.id": detail.listing_id },
-            doc! {
-                "$set": set_doc
-            },
+            doc! { "$set": set_doc },
             None,
         )
         .await;
@@ -738,7 +774,11 @@ pub async fn contribute_detail_handler(
                 "updated listing members",
             );
 
-            let status = if result.matched_count == 0 { "missing" } else { "ok" };
+            let status = if result.matched_count == 0 {
+                "missing"
+            } else {
+                "ok"
+            };
             Ok(warp::reply::json(&ContributeDetailResponse {
                 status,
                 matched_count: result.matched_count,
