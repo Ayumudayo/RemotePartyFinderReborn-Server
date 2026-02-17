@@ -150,5 +150,6 @@ CARGO_INCREMENTAL=0 cargo +stable test resolve_member_player
 
 ## License
 
-No license specified yet.
-Since the original repository also does not have a license set, the license configuration is postponed.
+No open-source license has been declared for this repository at this time.
+
+Please read `LEGAL_NOTICE.md` for provenance and policy details.
