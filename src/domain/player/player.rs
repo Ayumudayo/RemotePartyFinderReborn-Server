@@ -20,12 +20,42 @@ pub struct Player {
     /// 관측 횟수 (신뢰도 지표)
     pub seen_count: u32,
     /// 계정 ID (AccountId) - Optional allows backward compatibility but we settle on default "-1"
-    #[serde(default = "default_account_id")]
+    #[serde(
+        default = "default_account_id",
+        deserialize_with = "deserialize_account_id"
+    )]
     pub account_id: String,
 }
 
 fn default_account_id() -> String {
     "-1".to_string()
+}
+
+fn deserialize_account_id<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum AccountIdRepr {
+        String(String),
+        Signed(i64),
+        Unsigned(u64),
+    }
+
+    let value = Option::<AccountIdRepr>::deserialize(deserializer)?;
+    Ok(match value {
+        Some(AccountIdRepr::String(value)) => {
+            if value.trim().is_empty() {
+                default_account_id()
+            } else {
+                value
+            }
+        }
+        Some(AccountIdRepr::Signed(value)) => value.to_string(),
+        Some(AccountIdRepr::Unsigned(value)) => value.to_string(),
+        None => default_account_id(),
+    })
 }
 
 /// 플러그인에서 업로드하는 플레이어 데이터

@@ -525,7 +525,7 @@ pub async fn contribute_multiple_handler(
             continue;
         }
 
-        let bson_value = match mongodb::bson::to_bson(listing) {
+        let mut listing_doc = match mongodb::bson::to_document(listing) {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Failed to serialize listing {}: {:#?}", listing.id, e);
@@ -533,22 +533,30 @@ pub async fn contribute_multiple_handler(
             }
         };
 
+        // Preserve detail-derived fields populated by /contribute/detail.
+        listing_doc.remove("member_content_ids");
+        listing_doc.remove("member_jobs");
+        listing_doc.remove("leader_content_id");
+
         let filter = doc! {
             "listing.id": listing.id,
             "listing.last_server_restart": listing.last_server_restart,
             "listing.created_world": listing.created_world as u32,
         };
-        let update = doc! {
-            "$currentDate": {
-                "updated_at": true,
+        let update = vec![
+            doc! {
+                "$set": {
+                    "updated_at": "$$NOW",
+                    "created_at": { "$ifNull": ["$created_at", "$$NOW"] },
+                    "listing": {
+                        "$mergeObjects": [
+                            "$listing",
+                            listing_doc,
+                        ]
+                    },
+                }
             },
-            "$set": {
-                "listing": bson_value,
-            },
-            "$setOnInsert": {
-                "created_at": Utc::now(),
-            },
-        };
+        ];
         write_ops.push((listing.id, filter, update));
     }
 
@@ -628,6 +636,13 @@ pub struct UploadablePartyDetail {
     pub member_content_ids: Vec<u64>,
     #[serde(default)]
     pub member_jobs: Option<Vec<u8>>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ContributeDetailResponse {
+    status: &'static str,
+    matched_count: u64,
+    modified_count: u64,
 }
 
 pub async fn contribute_detail_handler(
@@ -713,10 +728,37 @@ pub async fn contribute_detail_handler(
             None,
         )
         .await;
-    
-    tracing::debug!("Updated listing {} members: {:?}", detail.listing_id, update_result);
-    
-    Ok(warp::reply::json(&"ok").into_response())
+
+    match update_result {
+        Ok(result) => {
+            tracing::debug!(
+                listing_id = detail.listing_id,
+                matched_count = result.matched_count,
+                modified_count = result.modified_count,
+                "updated listing members",
+            );
+
+            let status = if result.matched_count == 0 { "missing" } else { "ok" };
+            Ok(warp::reply::json(&ContributeDetailResponse {
+                status,
+                matched_count: result.matched_count,
+                modified_count: result.modified_count,
+            })
+            .into_response())
+        }
+        Err(error) => {
+            tracing::warn!(
+                listing_id = detail.listing_id,
+                error = ?error,
+                "failed to update listing members"
+            );
+            Ok(warp::reply::with_status(
+                "failed to update listing detail",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .into_response())
+        }
+    }
 }
 
 /// FFLogs 작업 요청 구조체 (Plugin -> Server response)

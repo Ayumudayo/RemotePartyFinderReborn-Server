@@ -103,6 +103,25 @@ Tune these four values together based on server capacity and contributor count:
 - `ingest_rate_limit_*` limits are per client-id (header `X-RPF-Client-Id`) and return `429` with `Retry-After`.
 - Restart the server after editing `config.toml`.
 
+### Legacy `account_id` Migration
+
+`players.account_id` is stored as `String` by design. If legacy documents still contain numeric values, the server can now read both formats, but you should normalize old records once.
+
+Run this in Mongo shell:
+
+```javascript
+db.players.updateMany(
+  { account_id: { $type: ["int", "long", "double", "decimal"] } },
+  [
+    {
+      $set: {
+        account_id: { $toString: "$account_id" }
+      }
+    }
+  ]
+)
+```
+
 ### Running the Server
 
 ```bash

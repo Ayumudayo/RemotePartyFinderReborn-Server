@@ -95,8 +95,11 @@ pub async fn insert_listing(
     }
 
     let opts = UpdateOptions::builder().upsert(true).build();
-    let bson_value = mongodb::bson::to_bson(&listing)?;
-    let now = Utc::now();
+    let mut listing_doc = mongodb::bson::to_document(&listing)?;
+    listing_doc.remove("member_content_ids");
+    listing_doc.remove("member_jobs");
+    listing_doc.remove("leader_content_id");
+
     collection
         .update_one(
             doc! {
@@ -104,17 +107,18 @@ pub async fn insert_listing(
                 "listing.last_server_restart": listing.last_server_restart,
                 "listing.created_world": listing.created_world as u32,
             },
-            doc! {
-                "$currentDate": {
-                    "updated_at": true,
-                },
+            vec![doc! {
                 "$set": {
-                    "listing": bson_value,
-                },
-                "$setOnInsert": {
-                    "created_at": now,
-                },
-            },
+                    "updated_at": "$$NOW",
+                    "created_at": { "$ifNull": ["$created_at", "$$NOW"] },
+                    "listing": {
+                        "$mergeObjects": [
+                            "$listing",
+                            listing_doc,
+                        ]
+                    },
+                }
+            }],
             opts,
         )
         .await
