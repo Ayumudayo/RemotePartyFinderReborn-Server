@@ -139,9 +139,35 @@ struct PreparedPlayerUpsert {
     account_id: String,
 }
 
-fn prepare_player_upsert(player: &crate::player::UploadablePlayer) -> Option<PreparedPlayerUpsert> {
-    if player.content_id == 0 || player.name.is_empty() || !is_valid_world_id(player.home_world) {
-        return None;
+#[derive(Debug, Clone, Copy)]
+enum PlayerUpsertRejectReason {
+    MissingContentId,
+    MissingName,
+    InvalidHomeWorld,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlayerUpsertReport {
+    pub requested: usize,
+    pub accepted: usize,
+    pub updated: usize,
+    pub invalid: usize,
+    pub failed: usize,
+}
+
+fn prepare_player_upsert(
+    player: &crate::player::UploadablePlayer,
+) -> Result<PreparedPlayerUpsert, PlayerUpsertRejectReason> {
+    if player.content_id == 0 {
+        return Err(PlayerUpsertRejectReason::MissingContentId);
+    }
+
+    if player.name.trim().is_empty() {
+        return Err(PlayerUpsertRejectReason::MissingName);
+    }
+
+    if !is_valid_world_id(player.home_world) {
+        return Err(PlayerUpsertRejectReason::InvalidHomeWorld);
     }
 
     let current_world = if is_valid_world_id(player.current_world) {
@@ -156,7 +182,7 @@ fn prepare_player_upsert(player: &crate::player::UploadablePlayer) -> Option<Pre
         "-1".to_string()
     };
 
-    Some(PreparedPlayerUpsert {
+    Ok(PreparedPlayerUpsert {
         content_id: player.content_id,
         name: player.name.clone(),
         home_world: player.home_world,
@@ -169,38 +195,64 @@ pub async fn upsert_players(
     collection: Collection<crate::player::Player>,
     players: &[crate::player::UploadablePlayer],
     concurrency: usize,
-) -> anyhow::Result<usize> {
-    let prepared = players
-        .iter()
-        .filter_map(prepare_player_upsert)
-        .collect::<Vec<_>>();
+) -> anyhow::Result<PlayerUpsertReport> {
+    let mut prepared = Vec::with_capacity(players.len());
+    let mut invalid_missing_content_id = 0usize;
+    let mut invalid_missing_name = 0usize;
+    let mut invalid_home_world = 0usize;
+
+    for player in players {
+        match prepare_player_upsert(player) {
+            Ok(op) => prepared.push(op),
+            Err(PlayerUpsertRejectReason::MissingContentId) => invalid_missing_content_id += 1,
+            Err(PlayerUpsertRejectReason::MissingName) => invalid_missing_name += 1,
+            Err(PlayerUpsertRejectReason::InvalidHomeWorld) => invalid_home_world += 1,
+        }
+    }
+
+    let invalid = invalid_missing_content_id + invalid_missing_name + invalid_home_world;
+    if invalid > 0 {
+        tracing::warn!(
+            requested = players.len(),
+            invalid,
+            invalid_missing_content_id,
+            invalid_missing_name,
+            invalid_home_world,
+            "Dropped invalid player rows before MongoDB upsert"
+        );
+    }
 
     let now = Utc::now();
+    let accepted = prepared.len();
     let mut successful = 0usize;
+    let mut failed = 0usize;
 
     let mut writes = futures_util::stream::iter(prepared.into_iter().map(|op| {
         let collection = collection.clone();
         let now = now.clone();
         async move {
+            let content_id = op.content_id;
             let mut set_doc = doc! {
                 "account_id": op.account_id,
                 "name": op.name,
                 "last_seen": now,
             };
 
+            let mut set_on_insert_doc = doc! {
+                "content_id": op.content_id as i64,
+            };
+
             if op.home_world != 0 {
                 set_doc.insert("home_world", op.home_world as u32);
+            } else {
+                set_on_insert_doc.insert("home_world", 0u32);
             }
 
             if op.current_world != 0 {
                 set_doc.insert("current_world", op.current_world as u32);
+            } else {
+                set_on_insert_doc.insert("current_world", 0u32);
             }
-
-            let set_on_insert_doc = doc! {
-                "content_id": op.content_id as i64,
-                "home_world": op.home_world as u32,
-                "current_world": op.current_world as u32,
-            };
 
             collection
                 .update_one(
@@ -213,17 +265,56 @@ pub async fn upsert_players(
                     UpdateOptions::builder().upsert(true).build(),
                 )
                 .await
+                .map_err(|error| (content_id, error))
         }
     }))
     .buffer_unordered(concurrency.max(1));
 
     while let Some(result) = writes.next().await {
-        if result.is_ok() {
-            successful += 1;
+        match result {
+            Ok(_) => {
+                successful += 1;
+            }
+            Err((content_id, error)) => {
+                failed += 1;
+                tracing::error!(
+                    content_id,
+                    error = ?error,
+                    "MongoDB player upsert failed"
+                );
+            }
         }
     }
 
-    Ok(successful)
+    let report = PlayerUpsertReport {
+        requested: players.len(),
+        accepted,
+        updated: successful,
+        invalid,
+        failed,
+    };
+
+    if report.failed == 0 {
+        tracing::info!(
+            requested = report.requested,
+            accepted = report.accepted,
+            updated = report.updated,
+            invalid = report.invalid,
+            failed = report.failed,
+            "MongoDB player upsert batch completed"
+        );
+    } else {
+        tracing::warn!(
+            requested = report.requested,
+            accepted = report.accepted,
+            updated = report.updated,
+            invalid = report.invalid,
+            failed = report.failed,
+            "MongoDB player upsert batch completed with write failures"
+        );
+    }
+
+    Ok(report)
 }
 
 pub async fn get_players_by_content_ids(

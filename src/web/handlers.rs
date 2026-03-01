@@ -618,11 +618,77 @@ pub async fn contribute_players_handler(
     )
     .await;
 
+    #[derive(Debug, serde::Serialize)]
+    struct ContributePlayersResponse {
+        status: &'static str,
+        requested: usize,
+        accepted: usize,
+        updated: usize,
+        invalid: usize,
+        failed: usize,
+    }
+
     match result {
-        Ok(successful) => Ok(format!("{}/{} players updated", successful, total).into_response()),
+        Ok(report) => {
+            let (status_code, status) = if report.requested == 0 {
+                (StatusCode::OK, "empty")
+            } else if report.failed > 0 {
+                (StatusCode::INTERNAL_SERVER_ERROR, "write_failure")
+            } else if report.invalid > 0 {
+                (StatusCode::BAD_REQUEST, "invalid_payload")
+            } else {
+                (StatusCode::OK, "ok")
+            };
+
+            if status_code == StatusCode::OK {
+                tracing::info!(
+                    requested = report.requested,
+                    accepted = report.accepted,
+                    updated = report.updated,
+                    invalid = report.invalid,
+                    failed = report.failed,
+                    "Processed /contribute/players request"
+                );
+            } else {
+                tracing::warn!(
+                    requested = report.requested,
+                    accepted = report.accepted,
+                    updated = report.updated,
+                    invalid = report.invalid,
+                    failed = report.failed,
+                    status,
+                    "Processed /contribute/players request with issues"
+                );
+            }
+
+            let response = ContributePlayersResponse {
+                status,
+                requested: report.requested,
+                accepted: report.accepted,
+                updated: report.updated,
+                invalid: report.invalid,
+                failed: report.failed,
+            };
+
+            Ok(warp::reply::with_status(warp::reply::json(&response), status_code).into_response())
+        }
         Err(e) => {
             tracing::error!("error upserting players: {:#?}", e);
-            Ok(format!("0/{} players updated (error)", total).into_response())
+
+            let response = ContributePlayersResponse {
+                status: "error",
+                requested: total,
+                accepted: 0,
+                updated: 0,
+                invalid: 0,
+                failed: total,
+            };
+
+            Ok(warp::reply::with_status(
+                warp::reply::json(&response),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .into_response())
         }
     }
 }
@@ -699,7 +765,35 @@ async fn upsert_detail_leader_if_valid(state: &State, detail: &UploadablePartyDe
             state.player_upsert_concurrency,
         )
         .await;
-        tracing::debug!("Upserted leader {}: {:?}", detail.leader_content_id, result);
+
+        match result {
+            Ok(report) => {
+                if report.updated == 1 && report.failed == 0 && report.invalid == 0 {
+                    tracing::info!(
+                        leader_content_id = detail.leader_content_id,
+                        "Upserted detail leader into players collection"
+                    );
+                } else {
+                    tracing::warn!(
+                        leader_content_id = detail.leader_content_id,
+                        requested = report.requested,
+                        accepted = report.accepted,
+                        updated = report.updated,
+                        invalid = report.invalid,
+                        failed = report.failed,
+                        "Detail leader upsert finished with issues"
+                    );
+                }
+            }
+            Err(error) => {
+                tracing::error!(
+                    leader_content_id = detail.leader_content_id,
+                    error = ?error,
+                    "Failed to upsert detail leader"
+                );
+            }
+        }
+
         return;
     }
 
