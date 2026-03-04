@@ -26,11 +26,16 @@ pub mod handlers;
 pub mod background;
 pub mod ingest_guard;
 
+pub const FFLOGS_LEASE_TTL_MINUTES: i64 = 3;
+pub const FFLOGS_LEASE_SWEEP_INTERVAL_SECONDS: u64 = 30;
+
 pub async fn start(config: Arc<Config>) -> Result<()> {
     let state = State::new(Arc::clone(&config)).await?;
 
     // Background tasks
     background::spawn_stats_task(Arc::clone(&state));
+    background::spawn_fflogs_lease_sweeper_task(Arc::clone(&state));
+    background::spawn_monitor_snapshot_task(Arc::clone(&state));
 
     tracing::info!("listening at {}", config.web.host);
     warp::serve(routes::router(state)).run(config.web.host).await;
@@ -63,10 +68,18 @@ pub struct State {
     pub fflogs_jobs_dispatched_total: AtomicU64,
     /// total number of FFLogs result payload items received from workers
     pub fflogs_results_received_total: AtomicU64,
+    /// total number of FFLogs result payload items rejected by lease/token validation
+    pub fflogs_results_rejected_total: AtomicU64,
+    /// total number of FFLogs lease items released via explicit abandon endpoint
+    pub fflogs_leases_abandoned_total: AtomicU64,
+    /// total number of FFLogs lease abandon items rejected by validation
+    pub fflogs_leases_abandon_rejected_total: AtomicU64,
     /// total hidden-cache refresh candidates detected during jobs allocation
     pub fflogs_hidden_refresh_total: AtomicU64,
     /// total leader fallback applications when rendering listings
     pub fflogs_leader_fallback_total: AtomicU64,
+    /// periodic monitor snapshot interval (seconds). set 0 to disable.
+    pub monitor_snapshot_interval_seconds: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -158,8 +171,12 @@ impl State {
             fflogs_job_leases: Default::default(),
             fflogs_jobs_dispatched_total: Default::default(),
             fflogs_results_received_total: Default::default(),
+            fflogs_results_rejected_total: Default::default(),
+            fflogs_leases_abandoned_total: Default::default(),
+            fflogs_leases_abandon_rejected_total: Default::default(),
             fflogs_hidden_refresh_total: Default::default(),
             fflogs_leader_fallback_total: Default::default(),
+            monitor_snapshot_interval_seconds: config.web.monitor_snapshot_interval_seconds,
         });
 
         // Initialize Indexes
@@ -201,7 +218,7 @@ impl State {
             };
 
             if is_conflict {
-                tracing::warn!("Index option conflict detected for 'updated_at'. Dropping old index and recreating...");
+                tracing::debug!("Index option conflict detected for 'updated_at'. Dropping old index and recreating...");
                 self.collection().drop_index("updated_at_1", None).await
                     .context("could not drop conflicting updated_at index")?;
                 

@@ -44,6 +44,9 @@ The server is built with:
     fflogs_jobs_limit = 20
     fflogs_hidden_cache_ttl_hours = 24
 
+    # Console monitor snapshot (seconds, 0 to disable; default off for low-noise console)
+    monitor_snapshot_interval_seconds = 0
+
     # MongoDB write concurrency
     listing_upsert_concurrency = 16
     player_upsert_concurrency = 32
@@ -98,6 +101,7 @@ Tune these four values together based on server capacity and contributor count:
 
 - Higher `fflogs_jobs_limit` increases refresh speed but raises FFLogs/API pressure.
 - Lower `fflogs_hidden_cache_ttl_hours` re-checks hidden characters sooner but increases query volume.
+- `monitor_snapshot_interval_seconds` controls periodic one-line `[MONITOR]` logs for Koyeb console observability (default `0` = off).
 - Increase upsert concurrency only if MongoDB has headroom; otherwise keep defaults.
 - `ingest_require_signature = true` enables HMAC+timestamp+nonce verification for `/contribute*` requests.
 - `ingest_rate_limit_*` limits are per client-id (header `X-RPF-Client-Id`) and return `429` with `Retry-After`.

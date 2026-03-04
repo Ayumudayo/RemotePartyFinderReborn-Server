@@ -50,7 +50,6 @@ internal class Program
         File.WriteAllText(Path.Join(outPath, "territory_names.rs"), prog.GenerateTerritoryNames());
         File.WriteAllText(Path.Join(outPath, "auto_translate.rs"), prog.GenerateAutoTranslate());
         File.WriteAllText(Path.Join(outPath, "treasure_maps.rs"), prog.GenerateTreasureMaps());
-        File.WriteAllText(Path.Join(outPath, "translations.js"), prog.GenerateWebTranslations());
     }
 
     private static void GenerateTranslationsCsvMode(string csvPath, string outPath)
@@ -65,21 +64,21 @@ internal class Program
             ["objective"] = 10082,
             ["duty_completion"] = 10083,
             ["practice"] = 10084,
-            ["loot"] = 11079,
             ["conditions"] = 10005,
             ["duty_complete"] = 10079,
             ["duty_incomplete"] = 10080,
             ["weekly_reward_unclaimed"] = 10949,
-            ["one_player_per_job"] = 10095,
             ["high_end_duty"] = 10822,
             ["average_item_level"] = 3273,
         };
 
-        var languages = new Dictionary<string, string> { ["en"] = "en", ["ja"] = "ja", ["de"] = "de", ["fr"] = "fr" };
+        var languages = new[] { "en", "ja", "de", "fr" };
         var manualTranslations = new Dictionary<string, Dictionary<string, string>>
         {
             ["options"] = new() { ["en"] = "Options", ["ja"] =  "オプション", ["de"] = "Optionen", ["fr"] = "Options" },
             ["advanced"] = new() { ["en"] = "Advanced", ["ja"] = "詳細設定", ["de"] = "Erweitert", ["fr"] = "Avancé" },
+            ["loot"] = new() { ["en"] = "Loot", ["ja"] = "周回", ["de"] = "Beute sammeln", ["fr"] = "Plusieurs fois" },
+            ["one_player_per_job"] = new() { ["en"] = "One Player per Job", ["ja"] = "ジョブ重複不可", ["de"] = "Doppelte Jobs nicht möglich", ["fr"] = "Jobs identiques impossibles" },
             ["min_item_level"] = new() { ["en"] = "Min Item Level", ["ja"] = "平均IL", ["de"] = "Min. Gegenstandsstufe", ["fr"] = "Niveau d'objet min." },
             
             ["no_listings"] = new() { ["en"] = "No collected listing data available. Please install the plugin to contribute!", ["ja"] = "収集された募集データがありません。プラグインを導入して募集情報を共有してください！", ["de"] = "Keine gesammelten Daten verfügbar. Bitte installiere das Plugin, um beizutragen!", ["fr"] = "Aucune donnée collectée disponible. Veuillez installer le plugin pour contribuer !" },
@@ -135,33 +134,71 @@ internal class Program
             return "";
         }
 
-        foreach (var (key, id) in textIds)
+        void AppendEntry(string key)
         {
             sb.Append($"    {key}: {{");
-            foreach (var (langKey, langCode) in languages)
+            foreach (var language in languages)
             {
-                var text = GetTextFromCsv(langCode, id);
-                if (string.IsNullOrEmpty(text) && manualTranslations.ContainsKey(key) && manualTranslations[key].ContainsKey(langCode))
+                var text = "";
+                if (textIds.TryGetValue(key, out var id))
                 {
-                    text = manualTranslations[key][langCode];
+                    text = GetTextFromCsv(language, id);
                 }
-                sb.Append($" {langKey}: \"{text}\",");
+
+                if (string.IsNullOrEmpty(text)
+                    && manualTranslations.TryGetValue(key, out var manual)
+                    && manual.TryGetValue(language, out var fallback))
+                {
+                    text = fallback;
+                }
+
+                sb.Append($" {language}: \"{text}\",");
             }
+
             sb.Append(" },\n");
         }
 
-        foreach (var (key, dict) in manualTranslations)
-        {
-            if (!textIds.ContainsKey(key))
-            {
-                sb.Append($"    {key}: {{");
-                foreach (var (lang, text) in dict)
-                {
-                    sb.Append($" {lang}: \"{text}\",");
-                }
-                sb.Append(" },\n");
-            }
-        }
+        AppendEntry("options");
+        AppendEntry("advanced");
+        AppendEntry("objective");
+        AppendEntry("duty_completion");
+        AppendEntry("practice");
+        AppendEntry("loot");
+        AppendEntry("conditions");
+        AppendEntry("duty_complete");
+        AppendEntry("duty_incomplete");
+        AppendEntry("weekly_reward_unclaimed");
+        AppendEntry("one_player_per_job");
+        AppendEntry("high_end_duty");
+        AppendEntry("average_item_level");
+        AppendEntry("min_item_level");
+        AppendEntry("no_listings");
+        AppendEntry("no_members");
+        AppendEntry("no_filter_results");
+
+        sb.Append("    // 시간 표시 관련 번역 (i18n)\n");
+        AppendEntry("time_in");
+        AppendEntry("time_ago");
+        AppendEntry("time_seconds");
+        AppendEntry("time_second");
+        AppendEntry("time_minutes");
+        AppendEntry("time_minute");
+        AppendEntry("time_hours");
+        AppendEntry("time_hour");
+        AppendEntry("time_now");
+        AppendEntry("expires_at");
+        AppendEntry("updated_at");
+
+        sb.Append("    // 콘텐츠 타입 필터 번역\n");
+        AppendEntry("content_type");
+        AppendEntry("ultimate");
+        AppendEntry("savage");
+        AppendEntry("extreme");
+        AppendEntry("chaotic");
+        AppendEntry("content_search");
+        AppendEntry("content_select");
+        AppendEntry("select_content");
+        AppendEntry("search");
 
         sb.Append("};\n");
         File.WriteAllText(Path.Join(outPath, "translations.js"), sb.ToString());
@@ -172,11 +209,6 @@ internal class Program
     private Program(Dictionary<Language, GameData> data)
     {
         this.Data = data;
-    }
-
-    private string GenerateWebTranslations()
-    {
-        return "";
     }
 
     private static StringBuilder DefaultHeader(bool localisedText = false)
@@ -600,10 +632,152 @@ internal class Program
 
     private string GenerateAutoTranslate()
     {
-        // Simply return empty stub for AutoTranslate to reduce complexity and avoid errors, 
-        // as we are focusing on translation generation primarily.
-        // Original code had complex parsing logic that we don't strictly need for this task.
-        return ""; 
+        var sb = DefaultHeader(true);
+        sb.Append("\nlazy_static::lazy_static! {\n");
+        sb.Append("    pub static ref AUTO_TRANSLATE: HashMap<(u32, u32), LocalisedText> = maplit::hashmap! {\n");
+
+        var parser = AutoTranslate.Parser();
+        foreach (var row in this.Data[Language.English].GetExcelSheet<Completion>()!)
+        {
+            if (row.Group == 61)
+            {
+                continue;
+            }
+
+            var lookup = row.LookupTable.ToString().Replace("<num(", "").Replace(")>", "");
+
+            if (lookup is not ("" or "@"))
+            {
+                string sheetName;
+                Maybe<IEnumerable<ISelectorPart>> selector;
+
+                try
+                {
+                    (sheetName, selector) = parser.ParseOrThrow(lookup);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine(lookup);
+                    Console.WriteLine(ex.Message);
+                    continue;
+                }
+
+                var sheets = this.Data
+                    .Select(kv => (kv.Key, new ExcelSheet<RawRow>(kv.Value.Excel.GetRawSheet(sheetName))))
+                    .ToDictionary();
+
+                var columns = new List<int>();
+                var rows = new List<Range>();
+                if (selector.HasValue)
+                {
+                    columns.Clear();
+                    rows.Clear();
+
+                    foreach (var part in selector.Value)
+                    {
+                        switch (part)
+                        {
+                            case IndexRange range:
+                            {
+                                var start = (int)range.Start;
+                                var end = (int)(range.End + 1);
+                                rows.Add(start..end);
+                                break;
+                            }
+                            case SingleRow single:
+                            {
+                                var idx = (int)single.Row;
+                                rows.Add(idx..(idx + 1));
+                                break;
+                            }
+                            case ColumnSpecifier col:
+                                columns.Add((int)col.Column);
+                                break;
+                        }
+                    }
+                }
+
+                if (columns.Count == 0)
+                {
+                    columns.Add(0);
+                }
+
+                if (rows.Count == 0)
+                {
+                    rows.Add(..);
+                }
+
+                var builder = new StringBuilder();
+                foreach (var range in rows)
+                {
+                    for (var i = (uint)range.Start.Value; i < range.End.Value; i++)
+                    {
+                        if (!sheets[Language.English].HasRow(i))
+                        {
+                            continue;
+                        }
+
+                        builder.Clear();
+                        builder.Append($"        ({row.Group}, {i}) => LocalisedText {{\n");
+
+                        var lines = 0;
+                        foreach (var lang in this.Data.Keys)
+                        {
+                            var sheet = sheets[lang];
+
+                            var idx = i;
+                            if (!sheet.HasRow(idx))
+                            {
+                                continue;
+                            }
+
+                            var rawRow = sheet.GetRow(idx);
+                            foreach (var col in columns)
+                            {
+                                try
+                                {
+                                    var seString = rawRow.ReadStringColumn(col);
+                                    var text = seString.ExtractText();
+                                    if (text.Length > 0)
+                                    {
+                                        var replace = text.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace(" ", "").Replace("­", "");
+                                        builder.Append($"            {Languages[lang]}: \"{replace}\",\n");
+                                        lines += 1;
+                                        break;
+                                    }
+                                }
+                                catch (ArgumentOutOfRangeException)
+                                {
+                                    continue;
+                                }
+                            }
+                        }
+
+                        builder.Append("        },\n");
+
+                        if (lines != 4)
+                        {
+                            continue;
+                        }
+
+                        sb.Append(builder);
+                    }
+                }
+            }
+            else
+            {
+                var text = this.GetLocalisedStruct<Completion>(row.RowId, r => r.Text, 8);
+                if (text != null)
+                {
+                    sb.Append($"        ({row.Group}, {row.RowId}) => {text},\n");
+                }
+            }
+        }
+
+        sb.Append("    };\n");
+        sb.Append("}\n");
+
+        return sb.ToString();
     }
 
     private string GenerateTreasureMaps()

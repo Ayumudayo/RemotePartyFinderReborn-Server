@@ -93,6 +93,10 @@ fn default_ingest_nonce_ttl_seconds() -> i64 {
     300
 }
 
+fn default_monitor_snapshot_interval_seconds() -> u64 {
+    0
+}
+
 #[derive(Deserialize)]
 pub struct Config {
     pub web: Web,
@@ -148,6 +152,8 @@ pub struct Web {
     pub ingest_clock_skew_seconds: i64,
     #[serde(default = "default_ingest_nonce_ttl_seconds")]
     pub ingest_nonce_ttl_seconds: i64,
+    #[serde(default = "default_monitor_snapshot_interval_seconds")]
+    pub monitor_snapshot_interval_seconds: u64,
 }
 
 #[derive(Deserialize)]

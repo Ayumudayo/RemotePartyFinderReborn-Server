@@ -6447,6 +6447,12 @@ lazy_static::lazy_static! {
             de: "Sternenlicht-Stände",
             fr: "Marché des étoiles",
         },
+        1310 => LocalisedText {
+            en: "Oizys",
+            ja: "惑星オイジュス",
+            de: "Oizys",
+            fr: "Oizys",
+        },
         1311 => LocalisedText {
             en: "Pilgrim's Traverse",
             ja: "ピルグリム・トラバース",
@@ -6470,6 +6476,24 @@ lazy_static::lazy_static! {
             ja: "ミストウェイク",
             de: "Nebeltrift",
             fr: "Sillage brumeux",
+        },
+        1315 => LocalisedText {
+            en: "The Merchant's Tale",
+            ja: "商客物語",
+            de: "Des Händlers Liebesmüh",
+            fr: "Contes du Camelot",
+        },
+        1316 => LocalisedText {
+            en: "The Merchant's Tale",
+            ja: "商客物語",
+            de: "Des Händlers Liebesmüh",
+            fr: "Contes du Camelot",
+        },
+        1317 => LocalisedText {
+            en: "Another Merchant's Tale",
+            ja: "異聞商客物語",
+            de: "Des Händlers kuriose Liebesmüh",
+            fr: "Contes du Camelot annexes",
         },
         1318 => LocalisedText {
             en: "Castrum Fluminis",
@@ -6570,8 +6594,14 @@ lazy_static::lazy_static! {
         1336 => LocalisedText {
             en: "Lilyswim",
             ja: "睡蓮湖近郊",
-            de: "睡蓮湖近郊",
+            de: "Lilienteich",
             fr: "Alentours du lac aux Nénuphars",
+        },
+        1337 => LocalisedText {
+            en: "The Maiden's Home",
+            ja: "美しい娘の家",
+            de: "Gemächer der jungen Angebeteten",
+            fr: "Appartements de la belle demoiselle",
         },
         1338 => LocalisedText {
             en: "Bentini Depot",

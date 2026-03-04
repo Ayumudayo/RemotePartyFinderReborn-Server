@@ -15,6 +15,7 @@ pub fn router(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .or(contribute_detail(Arc::clone(&state)))
         .or(contribute_fflogs_jobs(Arc::clone(&state)))
         .or(contribute_fflogs_results(Arc::clone(&state)))
+        .or(contribute_fflogs_leases_abandon(Arc::clone(&state)))
         .or(stats(Arc::clone(&state)))
         .or(stats_seven_days(Arc::clone(&state)))
         .or(assets())
@@ -165,6 +166,23 @@ fn contribute_fflogs_results(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::body::json())
         .and_then(move |headers, results: Vec<handlers::ParseResult>| {
             handlers::contribute_fflogs_results_handler(Arc::clone(&state), headers, results)
+        });
+    warp::post().and(route).boxed()
+}
+
+fn contribute_fflogs_leases_abandon(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
+    let route = warp::path("contribute")
+        .and(warp::path("fflogs"))
+        .and(warp::path("leases"))
+        .and(warp::path("abandon"))
+        .and(warp::path::end())
+        .and(warp::header::headers_cloned())
+        .and(warp::body::content_length_limit(
+            state.max_body_bytes_fflogs_results,
+        ))
+        .and(warp::body::json())
+        .and_then(move |headers, leases: Vec<handlers::AbandonFflogsLease>| {
+            handlers::contribute_fflogs_leases_abandon_handler(Arc::clone(&state), headers, leases)
         });
     warp::post().and(route).boxed()
 }

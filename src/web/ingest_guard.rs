@@ -21,6 +21,7 @@ pub enum IngestEndpoint {
     ContributeDetail,
     ContributeFflogsJobs,
     ContributeFflogsResults,
+    ContributeFflogsLeasesAbandon,
 }
 
 impl IngestEndpoint {
@@ -32,6 +33,7 @@ impl IngestEndpoint {
             Self::ContributeDetail => "contribute_detail",
             Self::ContributeFflogsJobs => "contribute_fflogs_jobs",
             Self::ContributeFflogsResults => "contribute_fflogs_results",
+            Self::ContributeFflogsLeasesAbandon => "contribute_fflogs_leases_abandon",
         }
     }
 
@@ -43,6 +45,7 @@ impl IngestEndpoint {
             Self::ContributeDetail => limits.detail_per_minute,
             Self::ContributeFflogsJobs => limits.fflogs_jobs_per_minute,
             Self::ContributeFflogsResults => limits.fflogs_results_per_minute,
+            Self::ContributeFflogsLeasesAbandon => limits.fflogs_results_per_minute,
         }
     }
 }

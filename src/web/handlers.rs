@@ -26,7 +26,7 @@ use crate::{
     template::listings::ListingsTemplate,
     template::stats::StatsTemplate,
 };
-use super::State;
+use super::{State, FFLOGS_LEASE_TTL_MINUTES};
 use super::ingest_guard::{self, IngestEndpoint};
 
 fn resolve_member_player(
@@ -559,12 +559,14 @@ pub async fn contribute_multiple_handler(
         match build_listing_upsert(listing) {
             Ok(op) => upserts.push(op),
             Err(error) => {
-                tracing::warn!("Failed to serialize listing {}: {:#?}", listing.id, error);
+                tracing::debug!("Failed to serialize listing {}: {:#?}", listing.id, error);
             }
         }
     }
 
+    let upsert_total = upserts.len();
     let mut successful = 0usize;
+    let mut failed_writes = 0usize;
     let mut writes = futures_util::stream::iter(upserts.into_iter().map(|(listing_id, filter, update)| {
         let collection = state.collection();
         async move {
@@ -580,9 +582,20 @@ pub async fn contribute_multiple_handler(
         match write_result {
             Ok(_) => successful += 1,
             Err((listing_id, error)) => {
-                tracing::warn!("Failed to insert listing {}: {:#?}", listing_id, error);
+                failed_writes += 1;
+                tracing::debug!("Failed to insert listing {}: {:#?}", listing_id, error);
             }
         }
+    }
+
+    if failed_writes > 0 {
+        tracing::warn!(
+            requested_total = total,
+            attempted_upserts = upsert_total,
+            successful_upserts = successful,
+            failed_writes,
+            "Processed /contribute/multiple request with insert failures"
+        );
     }
 
     let _ = state.listings_channel.send(listings.into());
@@ -641,7 +654,7 @@ pub async fn contribute_players_handler(
             };
 
             if status_code == StatusCode::OK {
-                tracing::info!(
+                tracing::debug!(
                     requested = report.requested,
                     accepted = report.accepted,
                     updated = report.updated,
@@ -649,8 +662,18 @@ pub async fn contribute_players_handler(
                     failed = report.failed,
                     "Processed /contribute/players request"
                 );
-            } else {
+            } else if status == "write_failure" {
                 tracing::warn!(
+                    requested = report.requested,
+                    accepted = report.accepted,
+                    updated = report.updated,
+                    invalid = report.invalid,
+                    failed = report.failed,
+                    status,
+                    "Processed /contribute/players request with issues"
+                );
+            } else {
+                tracing::debug!(
                     requested = report.requested,
                     accepted = report.accepted,
                     updated = report.updated,
@@ -769,12 +792,12 @@ async fn upsert_detail_leader_if_valid(state: &State, detail: &UploadablePartyDe
         match result {
             Ok(report) => {
                 if report.updated == 1 && report.failed == 0 && report.invalid == 0 {
-                    tracing::info!(
+                    tracing::debug!(
                         leader_content_id = detail.leader_content_id,
                         "Upserted detail leader into players collection"
                     );
                 } else {
-                    tracing::warn!(
+                    tracing::debug!(
                         leader_content_id = detail.leader_content_id,
                         requested = report.requested,
                         accepted = report.accepted,
@@ -944,6 +967,38 @@ pub struct ParseResult {
     /// FFLogs job lease token (jobs 응답과 묶이는 단회성 토큰)
     #[serde(default)]
     pub lease_token: String,
+}
+
+/// FFLogs lease 즉시 반납 요청 구조체 (Plugin -> Server request)
+#[derive(Debug, serde::Deserialize)]
+pub struct AbandonFflogsLease {
+    pub content_id: u64,
+    pub zone_id: u32,
+    #[serde(default)]
+    pub difficulty_id: i32,
+    #[serde(default)]
+    pub partition: i32,
+    #[serde(default)]
+    pub lease_token: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ContributeFflogsResultsResponse {
+    status: &'static str,
+    submitted: usize,
+    accepted: usize,
+    updated: usize,
+    rejected: usize,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ContributeFflogsLeaseAbandonResponse {
+    status: &'static str,
+    submitted: usize,
+    released: usize,
+    rejected: usize,
 }
 
 /// 플러그인에게 파싱 작업 할당
@@ -1121,7 +1176,7 @@ pub async fn contribute_fflogs_jobs_handler(
     }
 
     // lease selected jobs to avoid duplicate dispatch across concurrent workers
-    let Some(lease_ttl) = TimeDelta::try_minutes(3) else {
+    let Some(lease_ttl) = TimeDelta::try_minutes(FFLOGS_LEASE_TTL_MINUTES) else {
         return Ok(warp::reply::json(&Vec::<ParseJob>::new()).into_response());
     };
     let now = Utc::now();
@@ -1251,7 +1306,7 @@ pub async fn contribute_fflogs_results_handler(
         }
     }
 
-    let accepted_results_total = accepted_results.len() as u64;
+    let accepted_results_total = accepted_results.len();
     let mut success_count = 0;
 
     for res in accepted_results {
@@ -1323,8 +1378,8 @@ pub async fn contribute_fflogs_results_handler(
     if accepted_results_total > 0 {
         let results_total = state
             .fflogs_results_received_total
-            .fetch_add(accepted_results_total, AtomicOrdering::Relaxed)
-            + accepted_results_total;
+            .fetch_add(accepted_results_total as u64, AtomicOrdering::Relaxed)
+            + accepted_results_total as u64;
 
         tracing::debug!(
             accepted_results_total,
@@ -1335,12 +1390,143 @@ pub async fn contribute_fflogs_results_handler(
         );
     }
 
-    Ok(warp::reply::json(&format!(
-        "Updated {} records (accepted {}/{})",
-        success_count,
-        accepted_results_total,
-        submitted_results_total
-    ))
+    let rejected_results_total = submitted_results_total.saturating_sub(accepted_results_total);
+    if rejected_results_total > 0 {
+        state
+            .fflogs_results_rejected_total
+            .fetch_add(rejected_results_total as u64, AtomicOrdering::Relaxed);
+    }
+
+    let status = if rejected_results_total == 0 {
+        "ok"
+    } else {
+        "partial"
+    };
+
+    Ok(warp::reply::json(&ContributeFflogsResultsResponse {
+        status,
+        submitted: submitted_results_total,
+        accepted: accepted_results_total,
+        updated: success_count,
+        rejected: rejected_results_total,
+    })
+    .into_response())
+}
+
+/// 플러그인으로부터 미처리 FFLogs lease 즉시 반납 수신
+pub async fn contribute_fflogs_leases_abandon_handler(
+    state: Arc<State>,
+    headers: HeaderMap,
+    abandoned_leases: Vec<AbandonFflogsLease>,
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    let guard_ctx = match ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::ContributeFflogsLeasesAbandon,
+        &headers,
+        "POST",
+        "/contribute/fflogs/leases/abandon",
+    )
+    .await
+    {
+        Ok(ctx) => ctx,
+        Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
+    };
+
+    let submitted_total = abandoned_leases.len();
+    if submitted_total > state.max_fflogs_results_batch_size {
+        return Ok(warp::reply::with_status(
+            "too many FFLogs lease abandons in request",
+            StatusCode::PAYLOAD_TOO_LARGE,
+        )
+        .into_response());
+    }
+
+    let mut released_total = 0usize;
+    let mut rejected_total = 0usize;
+    let mut seen = HashSet::new();
+    let mut reasons = HashSet::new();
+
+    {
+        let mut leases = state.fflogs_job_leases.write().await;
+
+        for abandoned in abandoned_leases {
+            if let Some(reason) = abandoned.reason.as_deref() {
+                let reason = reason.trim();
+                if !reason.is_empty() {
+                    reasons.insert(reason.to_string());
+                }
+            }
+
+            let key = super::FflogsLeaseKey {
+                content_id: abandoned.content_id,
+                zone_id: abandoned.zone_id,
+                difficulty_id: abandoned.difficulty_id,
+                partition: abandoned.partition,
+            };
+
+            let dedup_key = format!(
+                "{}:{}:{}:{}:{}",
+                key.content_id,
+                key.zone_id,
+                key.difficulty_id,
+                key.partition,
+                abandoned.lease_token
+            );
+
+            if !seen.insert(dedup_key) {
+                continue;
+            }
+
+            let valid = match leases.get(&key) {
+                Some(lease) => {
+                    !abandoned.lease_token.is_empty()
+                        && lease.client_id == guard_ctx.client_id
+                        && lease.lease_token == abandoned.lease_token
+                }
+                None => false,
+            };
+
+            if !valid {
+                rejected_total += 1;
+                continue;
+            }
+
+            if leases.remove(&key).is_some() {
+                released_total += 1;
+            } else {
+                rejected_total += 1;
+            }
+        }
+    }
+
+    if released_total > 0 {
+        state
+            .fflogs_leases_abandoned_total
+            .fetch_add(released_total as u64, AtomicOrdering::Relaxed);
+
+        tracing::debug!(
+            client_id = guard_ctx.client_id,
+            submitted_total,
+            released_total,
+            rejected_total,
+            reasons = ?reasons,
+            "fflogs lease abandon processed"
+        );
+    }
+
+    if rejected_total > 0 {
+        state
+            .fflogs_leases_abandon_rejected_total
+            .fetch_add(rejected_total as u64, AtomicOrdering::Relaxed);
+    }
+
+    let status = if rejected_total == 0 { "ok" } else { "partial" };
+    Ok(warp::reply::json(&ContributeFflogsLeaseAbandonResponse {
+        status,
+        submitted: submitted_total,
+        released: released_total,
+        rejected: rejected_total,
+    })
     .into_response())
 }
 

@@ -35,3 +35,4 @@ rustc-ice-*.txt
 /RemotePartyFinderReborn-Server.sln
 /generator/obj/
 /generator/bin/
+/generator/.vs/

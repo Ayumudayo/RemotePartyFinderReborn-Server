@@ -8277,6 +8277,16 @@ lazy_static::lazy_static! {
             high_end: false,
             content_kind: ContentKind::Other(39),
         },
+        1066 => DutyInfo {
+            name: LocalisedText {
+                en: "The Merchant's Tale",
+                ja: "ヴァリアントダンジョン 商客物語",
+                de: "Des Händlers Liebesmüh",
+                fr: "Contes du Camelot - Donjon à embranchements",
+            },
+            high_end: false,
+            content_kind: ContentKind::VCDungeonFinder,
+        },
         1067 => DutyInfo {
             name: LocalisedText {
                 en: "Tsukuyomi's Pain (Unreal)",
@@ -8387,6 +8397,16 @@ lazy_static::lazy_static! {
             high_end: true,
             content_kind: ContentKind::Trials,
         },
+        1079 => DutyInfo {
+            name: LocalisedText {
+                en: "Another Merchant's Tale",
+                ja: "アナザーダンジョン 異聞商客物語",
+                de: "Des Händlers kuriose Liebesmüh",
+                fr: "Contes du Camelot annexes - Donjon alternatif",
+            },
+            high_end: false,
+            content_kind: ContentKind::VCDungeonFinder,
+        },
         1080 => DutyInfo {
             name: LocalisedText {
                 en: "Worqor Chirteh (Triumph)",
@@ -8426,6 +8446,16 @@ lazy_static::lazy_static! {
             },
             high_end: false,
             content_kind: ContentKind::GoldSaucer,
+        },
+        1084 => DutyInfo {
+            name: LocalisedText {
+                en: "The Merchant's Tale (Advanced)",
+                ja: "アドバンスド・ヴァリアントダンジョン 商客物語",
+                de: "Des Händlers Liebesmüh (fortgeschritten)",
+                fr: "Contes du Camelot - Donjon à embranchements (avancé)",
+            },
+            high_end: false,
+            content_kind: ContentKind::VCDungeonFinder,
         },
         1085 => DutyInfo {
             name: LocalisedText {

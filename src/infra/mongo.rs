@@ -212,7 +212,7 @@ pub async fn upsert_players(
 
     let invalid = invalid_missing_content_id + invalid_missing_name + invalid_home_world;
     if invalid > 0 {
-        tracing::warn!(
+        tracing::debug!(
             requested = players.len(),
             invalid,
             invalid_missing_content_id,
@@ -295,7 +295,7 @@ pub async fn upsert_players(
     };
 
     if report.failed == 0 {
-        tracing::info!(
+        tracing::debug!(
             requested = report.requested,
             accepted = report.accepted,
             updated = report.updated,
@@ -330,7 +330,7 @@ pub async fn get_players_by_content_ids(
         .filter_map(async |result| match result {
             Ok(player) => Some(player),
             Err(error) => {
-                tracing::warn!("Error reading player: {:?}", error);
+                tracing::debug!("Error reading player: {:?}", error);
                 None
             }
         })
