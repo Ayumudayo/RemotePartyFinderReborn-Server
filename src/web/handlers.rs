@@ -165,6 +165,8 @@ fn lookup_fflogs_displays(
     // Progress (boss remaining HP %)
     let mut p1_boss = None;
     let mut p2_boss = None;
+    let mut p1_clear_count = None;
+    let mut p2_clear_count = None;
 
     if let Some(doc) = parse_docs.get(&content_id) {
         let zone_cache = doc
@@ -188,6 +190,9 @@ fn lookup_fflogs_displays(
                     if let Some(bp) = enc_parse.boss_percentage {
                         p1_boss = Some(bp.round().clamp(0.0, 100.0) as u8);
                     }
+                    if let Some(clears) = enc_parse.clear_count {
+                        p1_clear_count = Some(clears.min(u16::MAX as u32) as u16);
+                    }
                 }
 
                 // Secondary (P2)
@@ -199,6 +204,9 @@ fn lookup_fflogs_displays(
                         }
                         if let Some(bp) = enc_parse.boss_percentage {
                             p2_boss = Some(bp.round().clamp(0.0, 100.0) as u8);
+                        }
+                        if let Some(clears) = enc_parse.clear_count {
+                            p2_clear_count = Some(clears.min(u16::MAX as u32) as u16);
                         }
                     }
                 }
@@ -219,6 +227,10 @@ fn lookup_fflogs_displays(
         crate::template::listings::ProgressDisplay::new(
             p1_boss,
             p2_boss,
+            p1_percentile,
+            p2_percentile,
+            p1_clear_count,
+            p2_clear_count,
             has_secondary,
             hidden,
         ),
@@ -348,7 +360,16 @@ pub async fn listings_handler(
                                      false,
                                      false,
                                  ),
-                                 crate::template::listings::ProgressDisplay::new(None, None, false, false),
+                                 crate::template::listings::ProgressDisplay::new(
+                                     None,
+                                     None,
+                                     None,
+                                     None,
+                                     None,
+                                     None,
+                                     false,
+                                     false,
+                                 ),
                              )
                          };
 
@@ -402,7 +423,16 @@ pub async fn listings_handler(
                              false,
                              false,
                          ),
-                         crate::template::listings::ProgressDisplay::new(None, None, false, false),
+                         crate::template::listings::ProgressDisplay::new(
+                             None,
+                             None,
+                             None,
+                             None,
+                             None,
+                             None,
+                             false,
+                             false,
+                         ),
                      )
                  };
 
@@ -957,6 +987,8 @@ pub struct ParseResult {
     #[serde(default)]
     pub boss_percentages: HashMap<i32, f64>,
     #[serde(default)]
+    pub clear_counts: HashMap<i32, i32>,
+    #[serde(default)]
     pub is_hidden: bool,
     /// 후보 서버(동명이인) 탐색을 통해 추정 매칭된 결과인지 여부
     #[serde(default)]
@@ -1312,6 +1344,7 @@ pub async fn contribute_fflogs_results_handler(
     for res in accepted_results {
         // ParseResult -> ZoneCache 변환
         let boss_percentages = res.boss_percentages;
+        let clear_counts = res.clear_counts;
         let mut encounter_map = HashMap::new();
 
         for (enc_id, percentile) in res.encounters {
@@ -1319,6 +1352,11 @@ pub async fn contribute_fflogs_results_handler(
                 .get(&enc_id)
                 .copied()
                 .map(|v| v as f32);
+            let clear_count = clear_counts
+                .get(&enc_id)
+                .copied()
+                .filter(|v| *v > 0)
+                .map(|v| v as u32);
 
             encounter_map.insert(
                 enc_id.to_string(),
@@ -1326,6 +1364,7 @@ pub async fn contribute_fflogs_results_handler(
                     percentile: percentile as f32, // f64 -> f32
                     job_id: 0,
                     boss_percentage,
+                    clear_count,
                 },
             );
         }
@@ -1336,12 +1375,18 @@ pub async fn contribute_fflogs_results_handler(
             if encounter_map.contains_key(&key) {
                 continue;
             }
+            let clear_count = clear_counts
+                .get(&enc_id)
+                .copied()
+                .filter(|v| *v > 0)
+                .map(|v| v as u32);
             encounter_map.insert(
                 key,
                 crate::mongo::EncounterParse {
                     percentile: -1.0,
                     job_id: 0,
                     boss_percentage: Some(boss_percentage as f32),
+                    clear_count,
                 },
             );
         }

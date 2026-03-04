@@ -63,6 +63,9 @@ pub struct EncounterParse {
     /// None이면 진행도 데이터를 아직 수집하지 않았거나, 조회할 리포트가 없는 상태.
     #[serde(default)]
     pub boss_percentage: Option<f32>,
+    /// 해당 Encounter 클리어 횟수
+    #[serde(default)]
+    pub clear_count: Option<u32>,
 }
 
 /// Zone 캐시가 만료되었는지 확인 (갱신 기준: 24시간)

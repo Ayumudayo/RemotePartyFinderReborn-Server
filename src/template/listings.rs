@@ -96,26 +96,51 @@ impl ParseDisplay {
 pub struct ProgressDisplay {
     /// 최종 보스 HP% (미클리어자만 표시; 클리어자는 None)
     pub final_boss_percentage: Option<u8>,
+    /// 최종 보스 클리어 횟수 (클리어자인 경우 표시)
+    pub final_clear_count: Option<u16>,
 }
 
 impl ProgressDisplay {
-    pub fn new(p1: Option<u8>, p2: Option<u8>, has_secondary: bool, hidden: bool) -> Self {
-        let final_raw = if hidden {
-            None
-        } else if has_secondary {
-            p2
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        p1_boss: Option<u8>,
+        p2_boss: Option<u8>,
+        p1_percentile: Option<u8>,
+        p2_percentile: Option<u8>,
+        p1_clear_count: Option<u16>,
+        p2_clear_count: Option<u16>,
+        has_secondary: bool,
+        hidden: bool,
+    ) -> Self {
+        if hidden {
+            return Self {
+                final_boss_percentage: None,
+                final_clear_count: None,
+            };
+        }
+
+        let (final_boss_raw, final_percentile, final_clear_raw) = if has_secondary {
+            (p2_boss, p2_percentile, p2_clear_count)
         } else {
-            p1
+            (p1_boss, p1_percentile, p1_clear_count)
         };
 
-        let final_boss_percentage = match final_raw {
-            Some(0) => None,
-            Some(v) => Some(v),
-            None => None,
+        let final_clear_count = final_clear_raw.filter(|v| *v > 0);
+
+        // Best percentile(= 클리어 기록) 또는 clear_count가 있으면 진행도 HP는 노출하지 않는다.
+        let final_boss_percentage = if final_percentile.is_some() || final_clear_count.is_some() {
+            None
+        } else {
+            match final_boss_raw {
+                Some(0) => None,
+                Some(v) => Some(v),
+                None => None,
+            }
         };
 
         Self {
             final_boss_percentage,
+            final_clear_count,
         }
     }
 }
@@ -224,6 +249,32 @@ mod tests {
 
         let placeholder = sample_member("Party Leader", 73);
         assert!(placeholder.fflogs_character_url().is_none());
+    }
+
+    #[test]
+    fn progress_hides_boss_hp_when_percentile_exists_and_shows_clear_count() {
+        let progress = super::ProgressDisplay::new(
+            Some(23),
+            None,
+            Some(95),
+            None,
+            Some(7),
+            None,
+            false,
+            false,
+        );
+
+        assert_eq!(progress.final_boss_percentage, None);
+        assert_eq!(progress.final_clear_count, Some(7));
+    }
+
+    #[test]
+    fn progress_shows_boss_hp_when_not_cleared() {
+        let progress =
+            super::ProgressDisplay::new(Some(17), None, None, None, None, None, false, false);
+
+        assert_eq!(progress.final_boss_percentage, Some(17));
+        assert_eq!(progress.final_clear_count, None);
     }
 }
 

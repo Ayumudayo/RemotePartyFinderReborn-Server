@@ -294,13 +294,17 @@ remote party finder reborn - listings
 
                             <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
 
-                            {# Final boss HP%: only show for non-cleared players #}
+                            {# Clear count for cleared players, or final boss HP% for non-cleared players #}
                             <span class="member-prog">
+                                {%- if let Some(clears) = member.progress.final_clear_count %}
+                                <span class="prog" title="Clears: {{ clears }}">✅{{ clears }}</span>
+                                {%- else %}
                                 {%- match member.progress.final_boss_percentage %}
                                 {%- when Some with (hp) %}
                                 <span class="prog" title="Final Boss HP: {{ hp }}%">{{ hp }}%</span>
                                 {%- when None %}
                                 {%- endmatch %}
+                                {%- endif %}
                             </span>
 
                             <span class="member-link-slot">
