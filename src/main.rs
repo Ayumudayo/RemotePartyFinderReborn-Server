@@ -12,6 +12,7 @@ use tracing_subscriber::fmt::writer::MakeWriterExt;
 // =============================================================================
 mod base64_sestring;
 mod config;
+mod parse_resolver;
 mod sestring_ext;
 
 // =============================================================================
@@ -36,6 +37,7 @@ mod infra;
 // 하위 호환성을 위한 re-export
 pub use infra::mongo;
 pub use infra::fflogs;
+pub use infra::report_parse;
 
 // =============================================================================
 // 웹 레이어
@@ -115,7 +117,14 @@ async fn main() {
     let config_path = if args.is_empty() {
         Cow::from("./config.toml")
     } else {
-        Cow::from(args.remove(0))
+        match args.remove(0).as_str() {
+            "server" => Cow::from(
+                args.into_iter()
+                    .next()
+                    .unwrap_or_else(|| "./config.toml".to_string()),
+            ),
+            path => Cow::from(path.to_string()),
+        }
     };
 
     let config = match get_config(&*config_path).await {
@@ -126,7 +135,10 @@ async fn main() {
         }
     };
 
-    if let Err(e) = self::web::start(Arc::new(config)).await {
+    let config = Arc::new(config);
+    let result = self::web::start(Arc::clone(&config)).await;
+
+    if let Err(e) = result {
         tracing::error!("Server error: {}", e);
         tracing::error!("  {:?}", e);
     }

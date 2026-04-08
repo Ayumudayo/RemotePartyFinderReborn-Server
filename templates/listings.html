@@ -288,6 +288,12 @@ remote party finder reborn - listings
                             {%- endif %}
                             {%- endif %}
 
+                            {%- match member.parse.report_parse_badge() %}
+                            {%- when Some with (badge) %}
+                            <span class="parse-source-badge" title="Source: report-parse fallback">{{ badge }}</span>
+                            {%- when None %}
+                            {%- endmatch %}
+
                             {%- if member.parse.estimated %}
                             <span class="est" title="Estimated match (may be wrong)">?</span>
                             {%- endif %}
@@ -363,6 +369,12 @@ remote party finder reborn - listings
                     {%- endmatch %}
                     {%- endif %}
                     {%- endif %}
+
+                      {%- match renderable.leader_parse.report_parse_badge() %}
+                      {%- when Some with (badge) %}
+                      <span class="parse-source-badge" title="Source: report-parse fallback">{{ badge }}</span>
+                      {%- when None %}
+                      {%- endmatch %}
 
                       {%- if renderable.leader_parse.estimated %}
                       <span class="est" title="Estimated match (may be wrong)">?</span>
