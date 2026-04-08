@@ -5,3 +5,4 @@
 
 pub mod mongo;
 pub mod fflogs;
+pub mod report_parse;

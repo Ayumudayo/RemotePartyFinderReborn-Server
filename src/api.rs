@@ -3,7 +3,7 @@ use crate::ffxiv::duties::DutyInfo;
 use crate::ffxiv::Language;
 use crate::listing::{ConditionFlags, DutyFinderSettingsFlags, LootRuleFlags, ObjectiveFlags, PartyFinderListing, PartyFinderSlot, SearchAreaFlags};
 use crate::listing_container::QueriedListing;
-use crate::mongo::{get_current_listings, get_players_by_content_ids};
+use crate::mongo::{get_current_listings, get_parse_docs, get_players_by_content_ids};
 use crate::sestring_ext::SeStringExt;
 use crate::web::State;
 use crate::ws::WsApiClient;
@@ -61,11 +61,10 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                 // Fetch players (Batch 1)
                 let players = get_players_by_content_ids(state.players_collection(), &all_content_ids).await.unwrap_or_default();
                 let player_map: HashMap<u64, crate::player::Player> = players.into_iter().map(|p| (p.content_id, p)).collect();
-
-                // Prepare for Batch 2: Collect Content IDs per Zone ID
-                let mut zone_requests: HashMap<String, Vec<u64>> = HashMap::new();
-                // Store calculated zone info to avoid recalculating in the second loop
-                let mut listing_meta: HashMap<u32, (u16, u16, String)> = HashMap::new();
+                let parse_docs = get_parse_docs(state.parse_collection(), &all_content_ids).await.unwrap_or_default();
+                let mut report_parse_requests: HashMap<String, Vec<crate::mongo::ReportParseIdentityKey>> =
+                    HashMap::new();
+                let mut listing_meta: HashMap<u32, (u32, u32, String, String)> = HashMap::new();
 
                 for ql in &listings {
                     let duty_id = ql.listing.duty;
@@ -84,29 +83,65 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                     } else {
                         (0, 0, String::new())
                     };
+                    let legacy_zone_key = if zone_id > 0 {
+                        zone_id.to_string()
+                    } else {
+                        String::new()
+                    };
 
-                    listing_meta.insert(ql.listing.id, (zone_id as u16, encounter_id as u16, zone_key.clone()));
+                    listing_meta.insert(ql.listing.id, (zone_id, encounter_id, zone_key.clone(), legacy_zone_key));
 
-                    if zone_id > 0 {
-                        let entry = zone_requests.entry(zone_key).or_insert_with(Vec::new);
-                        for &mid in &ql.listing.member_content_ids {
-                            entry.push(mid as u64);
+                    if zone_id > 0 && ql.listing.high_end() {
+                        let leader_name = ql.listing.name.full_text(&Language::English);
+                        report_parse_requests
+                            .entry(zone_key.clone())
+                            .or_default()
+                            .push(crate::mongo::ReportParseIdentityKey::new(
+                                &leader_name,
+                                ql.listing.home_world,
+                            ));
+
+                        for (i, mid) in ql.listing.member_content_ids.iter().enumerate() {
+                            let uid = *mid as u64;
+                            if uid == 0 {
+                                continue;
+                            }
+
+                            let is_leader_member = uid == ql.listing.leader_content_id || i == 0;
+                            if let Some((name, home_world)) = resolve_api_member_identity(
+                                &player_map,
+                                uid,
+                                is_leader_member,
+                                &leader_name,
+                                ql.listing.home_world,
+                            ) {
+                                if home_world != 0 {
+                                    report_parse_requests
+                                        .entry(zone_key.clone())
+                                        .or_default()
+                                        .push(crate::mongo::ReportParseIdentityKey::new(
+                                            &name,
+                                            home_world,
+                                        ));
+                                }
+                            }
                         }
                     }
                 }
 
-                // Batch Query: Fetch parses for each Zone
-                // zone_key -> (content_id -> ZoneCache)
-                let mut parse_data_map: HashMap<String, HashMap<u64, crate::mongo::ZoneCache>> = HashMap::new();
-
-                for (zone_key, content_ids) in zone_requests {
-                    // Dedup content_ids
-                    let mut unique_ids = content_ids;
-                    unique_ids.sort_unstable();
-                    unique_ids.dedup();
-
-                    if let Ok(caches) = crate::mongo::get_zone_caches(state.parse_collection(), &unique_ids, &zone_key).await {
-                        parse_data_map.insert(zone_key, caches);
+                let mut report_parse_data_map: HashMap<
+                    String,
+                    HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>,
+                > = HashMap::new();
+                for (zone_key, identities) in report_parse_requests {
+                    if let Ok(summaries) = crate::mongo::get_report_parse_summaries_by_zone(
+                        state.report_parse_summary_collection(),
+                        &zone_key,
+                        &identities,
+                    )
+                    .await
+                    {
+                        report_parse_data_map.insert(zone_key, summaries);
                     }
                 }
                 
@@ -119,10 +154,10 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                     let mut container: ApiReadableListingContainer = ql.into();
                     
                     // Retrieve pre-calculated info
-                    let (zone_id, encounter_id, zone_key) = listing_meta
+                    let (zone_id, encounter_id, zone_key, legacy_zone_key) = listing_meta
                         .get(&container.listing.id)
                         .cloned()
-                        .unwrap_or((0, 0, String::new()));
+                        .unwrap_or((0, 0, String::new(), String::new()));
                     
                     let mut members = Vec::new();
                     
@@ -131,33 +166,6 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                         if uid == 0 {
                             continue;
                         }
-
-                        // Lookup in pre-fetched map
-                        let (percentile, color_class) = if zone_id > 0 {
-                            if let Some(zone_map) = parse_data_map.get(&zone_key) {
-                                if let Some(zone_cache) = zone_map.get(&uid) {
-                                    let enc_key = encounter_id.to_string();
-                                    if let Some(enc_parse) = zone_cache.encounters.get(&enc_key) {
-                                        if enc_parse.percentile < 0.0 {
-                                            (None, "parse-none".to_string())
-                                        } else {
-                                            (
-                                                Some(enc_parse.percentile.round() as u8),
-                                                crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string(),
-                                            )
-                                        }
-                                    } else {
-                                        (None, "parse-none".to_string())
-                                    }
-                                } else {
-                                    (None, "parse-none".to_string())
-                                }
-                            } else {
-                                (None, "parse-none".to_string())
-                            }
-                        } else {
-                            (None, "parse-none".to_string())
-                        };
 
                         let is_leader_member = uid == leader_content_id || i == 0;
                         let Some((name, home_world)) = resolve_api_member_identity(
@@ -169,13 +177,41 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
                         ) else {
                             continue;
                         };
+                        let fallback_summary = if zone_id > 0 {
+                            report_parse_data_map
+                                .get(&zone_key)
+                                .and_then(|summaries| {
+                                    summaries.get(&crate::mongo::ReportParseIdentityKey::new(
+                                        &name,
+                                        home_world,
+                                    ))
+                                })
+                        } else {
+                            None
+                        };
+                        let plugin_zone_cache = if zone_id > 0 {
+                            parse_docs.get(&uid).and_then(|doc| {
+                                doc.zones
+                                    .get(&zone_key)
+                                    .or_else(|| (!legacy_zone_key.is_empty()).then(|| legacy_zone_key.as_str()).and_then(|key| doc.zones.get(key)))
+                            })
+                        } else {
+                            None
+                        };
+                        let resolved = crate::parse_resolver::resolve_parse_data(
+                            plugin_zone_cache,
+                            fallback_summary.map(|summary| &summary.encounters),
+                            encounter_id,
+                            None,
+                        );
 
                         members.push(ApiReadableMember {
                             content_id: uid,
                             name,
                             home_world: home_world.into(),
-                            parse_percentile: percentile,
-                            parse_color_class: color_class,
+                            parse_percentile: resolved.primary_percentile,
+                            parse_color_class: resolved.primary_color_class,
+                            parse_source: resolved.source,
                         });
                     }
                     
@@ -273,6 +309,7 @@ struct ApiReadableMember {
     home_world: ApiReadableWorld,
     parse_percentile: Option<u8>,
     parse_color_class: String,
+    parse_source: crate::parse_resolver::ParseSource,
 }
 
 #[derive(Serialize)]

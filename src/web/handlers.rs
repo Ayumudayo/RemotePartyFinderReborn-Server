@@ -143,7 +143,10 @@ fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer>
 /// - Hidden 처리
 fn lookup_fflogs_displays(
     parse_docs: &HashMap<u64, ParseCacheDoc>,
+    report_parse_summaries: Option<&HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>>,
     content_id: u64,
+    fallback_name: Option<&str>,
+    fallback_home_world: Option<u16>,
     zone_key: &str,
     legacy_zone_key: Option<&str>,
     encounter_id: u32,
@@ -152,87 +155,44 @@ fn lookup_fflogs_displays(
     crate::template::listings::ParseDisplay,
     crate::template::listings::ProgressDisplay,
 ) {
-    let has_secondary = secondary_encounter_id.is_some();
-    let mut hidden = false;
-    let mut estimated = false;
-
-    // Parse
-    let mut p1_percentile = None;
-    let mut p1_class = "parse-none".to_string();
-    let mut p2_percentile = None;
-    let mut p2_class = "parse-none".to_string();
-
-    // Progress (boss remaining HP %)
-    let mut p1_boss = None;
-    let mut p2_boss = None;
-    let mut p1_clear_count = None;
-    let mut p2_clear_count = None;
-
-    if let Some(doc) = parse_docs.get(&content_id) {
-        let zone_cache = doc
-            .zones
+    let plugin_zone_cache = parse_docs.get(&content_id).and_then(|doc| {
+        doc.zones
             .get(zone_key)
-            .or_else(|| legacy_zone_key.and_then(|k| doc.zones.get(k)));
-
-        if let Some(zone_cache) = zone_cache {
-            if zone_cache.estimated {
-                estimated = true;
-            }
-            if zone_cache.hidden {
-                hidden = true;
-            } else {
-                // Primary (P1)
-                if let Some(enc_parse) = zone_cache.encounters.get(&encounter_id.to_string()) {
-                    if enc_parse.percentile >= 0.0 {
-                        p1_percentile = Some(enc_parse.percentile as u8);
-                        p1_class = crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string();
-                    }
-                    if let Some(bp) = enc_parse.boss_percentage {
-                        p1_boss = Some(bp.round().clamp(0.0, 100.0) as u8);
-                    }
-                    if let Some(clears) = enc_parse.clear_count {
-                        p1_clear_count = Some(clears.min(u16::MAX as u32) as u16);
-                    }
-                }
-
-                // Secondary (P2)
-                if let Some(sec_id) = secondary_encounter_id {
-                    if let Some(enc_parse) = zone_cache.encounters.get(&sec_id.to_string()) {
-                        if enc_parse.percentile >= 0.0 {
-                            p2_percentile = Some(enc_parse.percentile as u8);
-                            p2_class = crate::fflogs::mapping::percentile_color_class(enc_parse.percentile).to_string();
-                        }
-                        if let Some(bp) = enc_parse.boss_percentage {
-                            p2_boss = Some(bp.round().clamp(0.0, 100.0) as u8);
-                        }
-                        if let Some(clears) = enc_parse.clear_count {
-                            p2_clear_count = Some(clears.min(u16::MAX as u32) as u16);
-                        }
-                    }
-                }
-            }
-        }
-    }
+            .or_else(|| legacy_zone_key.and_then(|key| doc.zones.get(key)))
+    });
+    let fallback_summary = match (report_parse_summaries, fallback_name, fallback_home_world) {
+        (Some(summaries), Some(name), Some(home_world)) if home_world != 0 => summaries.get(
+            &crate::mongo::ReportParseIdentityKey::new(name, home_world),
+        ),
+        _ => None,
+    };
+    let resolved = crate::parse_resolver::resolve_parse_data(
+        plugin_zone_cache,
+        fallback_summary.map(|summary| &summary.encounters),
+        encounter_id,
+        secondary_encounter_id,
+    );
 
     (
         crate::template::listings::ParseDisplay::new(
-            p1_percentile,
-            p1_class,
-            p2_percentile,
-            p2_class,
-            has_secondary,
-            hidden,
-            estimated,
+            resolved.primary_percentile,
+            resolved.primary_color_class,
+            resolved.secondary_percentile,
+            resolved.secondary_color_class,
+            resolved.has_secondary,
+            resolved.hidden,
+            resolved.estimated,
+            resolved.source,
         ),
         crate::template::listings::ProgressDisplay::new(
-            p1_boss,
-            p2_boss,
-            p1_percentile,
-            p2_percentile,
-            p1_clear_count,
-            p2_clear_count,
-            has_secondary,
-            hidden,
+            resolved.primary_boss_percentage,
+            resolved.secondary_boss_percentage,
+            resolved.primary_percentile,
+            resolved.secondary_percentile,
+            resolved.primary_clear_count,
+            resolved.secondary_clear_count,
+            resolved.has_secondary,
+            resolved.hidden,
         ),
     )
 }
@@ -271,6 +231,79 @@ pub async fn listings_handler(
 
             // Optimisation: Pre-fetch all parse docs for all visible players
             let all_parse_docs = get_parse_docs(state.parse_collection(), &all_content_ids).await.unwrap_or_default();
+            let mut report_parse_requests: HashMap<String, Vec<crate::mongo::ReportParseIdentityKey>> =
+                HashMap::new();
+
+            for container in &containers {
+                let duty_id = container.listing.duty as u16;
+                let Some(info) = (if container.listing.high_end() {
+                    crate::fflogs::mapping::get_fflogs_encounter(duty_id)
+                } else {
+                    None
+                }) else {
+                    continue;
+                };
+
+                let zone_key = crate::fflogs::make_zone_cache_key(
+                    info.zone_id,
+                    info.difficulty_id.unwrap_or(0) as i32,
+                    crate::fflogs::mapping::FFLOGS_ZONES
+                        .get(&info.zone_id)
+                        .map(|zone| zone.partition)
+                        .unwrap_or(0) as i32,
+                );
+                let leader_name_text = container.listing.name.full_text(&lang);
+
+                report_parse_requests
+                    .entry(zone_key.clone())
+                    .or_default()
+                    .push(crate::mongo::ReportParseIdentityKey::new(
+                        &leader_name_text,
+                        container.listing.home_world,
+                    ));
+
+                for (i, member_id) in container.listing.member_content_ids.iter().enumerate() {
+                    let uid = *member_id as u64;
+                    if uid == 0 {
+                        continue;
+                    }
+
+                    let is_leader_member = uid == container.listing.leader_content_id || i == 0;
+                    let (player, _) = resolve_member_player(
+                        &players,
+                        uid,
+                        is_leader_member,
+                        &leader_name_text,
+                        container.listing.home_world,
+                        container.listing.current_world,
+                    );
+
+                    if player.home_world != 0 {
+                        report_parse_requests
+                            .entry(zone_key.clone())
+                            .or_default()
+                            .push(crate::mongo::ReportParseIdentityKey::new(
+                                &player.name,
+                                player.home_world,
+                            ));
+                    }
+                }
+            }
+
+            let mut all_report_parse_summaries: HashMap<
+                String,
+                HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>,
+            > = HashMap::new();
+            for (zone_key, identities) in report_parse_requests {
+                let summaries = crate::mongo::get_report_parse_summaries_by_zone(
+                    state.report_parse_summary_collection(),
+                    &zone_key,
+                    &identities,
+                )
+                .await
+                .unwrap_or_default();
+                all_report_parse_summaries.insert(zone_key, summaries);
+            }
 
             // Match players to listings with job info
             let mut renderable_containers = Vec::new();
@@ -343,7 +376,10 @@ pub async fn listings_handler(
                         let (parse, progress) = if zone_id > 0 {
                             lookup_fflogs_displays(
                                 &all_parse_docs,
+                                all_report_parse_summaries.get(&zone_key),
                                 uid,
+                                Some(&player.name),
+                                Some(player.home_world),
                                 &zone_key,
                                 Some(&legacy_zone_key),
                                 encounter_id,
@@ -359,6 +395,7 @@ pub async fn listings_handler(
                                      false,
                                      false,
                                      false,
+                                     crate::parse_resolver::ParseSource::None,
                                  ),
                                  crate::template::listings::ProgressDisplay::new(
                                      None,
@@ -406,7 +443,10 @@ pub async fn listings_handler(
                 let (leader_parse, _) = if zone_id > 0 && leader_content_id != 0 {
                     lookup_fflogs_displays(
                         &all_parse_docs,
+                        all_report_parse_summaries.get(&zone_key),
                         leader_content_id,
+                        Some(&leader_name_text),
+                        Some(container.listing.home_world),
                         &zone_key,
                         Some(&legacy_zone_key),
                         encounter_id,
@@ -422,6 +462,7 @@ pub async fn listings_handler(
                              false,
                              false,
                              false,
+                             crate::parse_resolver::ParseSource::None,
                          ),
                          crate::template::listings::ProgressDisplay::new(
                              None,

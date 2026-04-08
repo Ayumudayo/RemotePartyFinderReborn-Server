@@ -66,6 +66,7 @@ pub struct ParseDisplay {
     pub hidden: bool,
     /// FFLogs 캐릭터 매칭이 추정(동명이인 후보 탐색) 결과인지 여부
     pub estimated: bool,
+    pub source: crate::parse_resolver::ParseSource,
 }
 
 impl ParseDisplay {
@@ -78,6 +79,7 @@ impl ParseDisplay {
         has_secondary: bool,
         hidden: bool,
         estimated: bool,
+        source: crate::parse_resolver::ParseSource,
     ) -> Self {
         Self {
             primary_percentile: p1,
@@ -87,6 +89,14 @@ impl ParseDisplay {
             has_secondary,
             hidden,
             estimated,
+            source,
+        }
+    }
+
+    pub fn report_parse_badge(&self) -> Option<&'static str> {
+        match self.source {
+            crate::parse_resolver::ParseSource::ReportParse => Some("RP"),
+            _ => None,
         }
     }
 }
@@ -201,7 +211,7 @@ impl RenderableMember {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_fflogs_path_segment, RenderableMember};
+    use super::{encode_fflogs_path_segment, ParseDisplay, RenderableMember};
     use chrono::Utc;
 
     fn sample_member(name: &str, home_world: u16) -> RenderableMember {
@@ -275,6 +285,33 @@ mod tests {
 
         assert_eq!(progress.final_boss_percentage, Some(17));
         assert_eq!(progress.final_clear_count, None);
+    }
+
+    #[test]
+    fn parse_display_exposes_report_parse_badge_only_for_report_parse_source() {
+        let plugin = ParseDisplay::new(
+            Some(95),
+            "parse-orange".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
+            false,
+            false,
+            crate::parse_resolver::ParseSource::Plugin,
+        );
+        let fallback = ParseDisplay::new(
+            Some(88),
+            "parse-purple".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
+            false,
+            false,
+            crate::parse_resolver::ParseSource::ReportParse,
+        );
+
+        assert_eq!(plugin.report_parse_badge(), None);
+        assert_eq!(fallback.report_parse_badge(), Some("RP"));
     }
 }
 

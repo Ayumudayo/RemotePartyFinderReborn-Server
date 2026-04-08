@@ -363,6 +363,10 @@ pub use crate::fflogs::cache::{
     ParseCacheDoc,
     ZoneCache,
 };
+pub use crate::report_parse::{
+    ReportParseIdentityKey,
+    ReportParseSummaryDoc,
+};
 
 pub async fn get_zone_cache(
     collection: Collection<ParseCacheDoc>,
@@ -444,4 +448,54 @@ pub async fn upsert_zone_cache(
         .await?;
 
     Ok(())
+}
+
+pub async fn get_report_parse_summaries_by_zone(
+    collection: Collection<ReportParseSummaryDoc>,
+    zone_key: &str,
+    identities: &[ReportParseIdentityKey],
+) -> anyhow::Result<HashMap<ReportParseIdentityKey, ReportParseSummaryDoc>> {
+    if zone_key.trim().is_empty() || identities.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut unique_identities = identities.to_vec();
+    unique_identities.sort_by(|a, b| {
+        a.normalized_name
+            .cmp(&b.normalized_name)
+            .then_with(|| a.home_world.cmp(&b.home_world))
+    });
+    unique_identities.dedup();
+
+    let filters = unique_identities
+        .iter()
+        .map(|identity| {
+            doc! {
+                "normalized_name": &identity.normalized_name,
+                "home_world": identity.home_world as i32,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    let cursor = collection
+        .find(
+            doc! {
+                "zone_key": zone_key,
+                "$or": filters,
+            },
+            None,
+        )
+        .await?;
+
+    let docs = cursor
+        .filter_map(async |result| result.ok())
+        .collect::<Vec<_>>()
+        .await;
+
+    let mut summaries = HashMap::new();
+    for doc in docs {
+        summaries.insert(ReportParseIdentityKey::from_summary(&doc), doc);
+    }
+
+    Ok(summaries)
 }

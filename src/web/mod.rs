@@ -271,4 +271,10 @@ impl State {
     pub fn parse_collection(&self) -> Collection<crate::mongo::ParseCacheDoc> {
         self.mongo.database("rpf").collection("parses")
     }
+
+    pub fn report_parse_summary_collection(
+        &self,
+    ) -> Collection<crate::mongo::ReportParseSummaryDoc> {
+        self.mongo.database("rpf").collection("report_parse_summaries")
+    }
 }

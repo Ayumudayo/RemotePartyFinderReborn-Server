@@ -713,6 +713,33 @@ body > div.container {
     vertical-align: middle;
 }
 
+#listings>.listing .members-list .parse-source-badge,
+#listings>.listing .creator .parse-source-badge {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 1.8em;
+    height: 1.2em;
+    padding: 0 0.35em;
+    border-radius: 999px;
+    font-weight: 800;
+    font-size: 0.62em;
+    line-height: 1;
+    letter-spacing: 0.04em;
+    color: #d9f7f4;
+    background-color: rgba(39, 140, 129, 0.18);
+    border: 1px solid rgba(78, 188, 176, 0.32);
+    vertical-align: middle;
+}
+
+#listings>.listing .members-list .parse-source-badge {
+    margin-right: 0.3em;
+}
+
+#listings>.listing .creator .parse-source-badge {
+    margin-left: 0.35em;
+}
+
 #listings>.listing .members-list .est {
     margin-right: 0.3em;
 }
