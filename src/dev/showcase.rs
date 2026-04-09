@@ -395,9 +395,11 @@ mod tests {
     fn render_showcase_html_contains_all_marker_states() {
         let html = render_showcase_html().expect("showcase should render");
 
-        assert!(html.contains("HID"));
-        assert!(html.contains("RP"));
-        assert!(html.contains("Estimated match"));
+        assert!(html.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
+        assert!(html.contains(
+            r#"class="parse-source-badge" title="Source: report-parse fallback">RP"#
+        ));
+        assert!(html.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
         assert!(html.contains("✅"));
         assert!(html.contains("Final Boss HP: 17%"));
     }
@@ -406,7 +408,7 @@ mod tests {
     fn showcase_contains_alliance_and_empty_member_examples() {
         let html = render_showcase_html().expect("showcase should render");
 
-        assert!(html.contains("Alliance"));
+        assert!(html.contains(r#"<li class="party-divider">Alliance B</li>"#));
         assert!(html.contains("No information available for other members"));
     }
 }
