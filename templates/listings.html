@@ -290,16 +290,12 @@ remote party finder reborn - listings
                                 {%- endif %}
                             </div>
 
-                            <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
+                            <span class="member-info"><span class="member-name">{{ member.player.name }}</span> <small class="member-world">@ {{ member.player.home_world_name() }}</small></span>
 
                             <span class="member-tags">
                                 {%- match member.parse.hidden_rail_tag_label() %}
                                 {%- when Some with (badge) %}
-                                {%- if member.parse.hidden %}
-                                <span class="tag tag-hidden" title="FFLogs: Hidden">{{ badge }}</span>
-                                {%- else %}
-                                <span class="tag tag-hidden" title="Source: report-parse fallback">{{ badge }}</span>
-                                {%- endif %}
+                                <span class="tag tag-hidden" title="{{ member.parse.hidden_rail_tag_title() }}">{{ badge }}</span>
                                 {%- when None %}
                                 {%- endmatch %}
 
@@ -374,11 +370,7 @@ remote party finder reborn - listings
 
                       {%- match renderable.leader_parse.hidden_rail_tag_label() %}
                       {%- when Some with (badge) %}
-                      {%- if renderable.leader_parse.hidden %}
-                      <span class="tag tag-hidden" title="FFLogs: Hidden">{{ badge }}</span>
-                      {%- else %}
-                      <span class="tag tag-hidden" title="Source: report-parse fallback">{{ badge }}</span>
-                      {%- endif %}
+                      <span class="tag tag-hidden" title="{{ renderable.leader_parse.hidden_rail_tag_title() }}">{{ badge }}</span>
                       {%- when None %}
                       {%- endmatch %}
 
@@ -482,16 +474,12 @@ remote party finder reborn - listings
                                     {%- endif %}
                                 </div>
 
-                                <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
+                                <span class="member-info"><span class="member-name">{{ member.player.name }}</span> <small class="member-world">@ {{ member.player.home_world_name() }}</small></span>
 
                                 <span class="member-tags">
                                     {%- match member.parse.hidden_rail_tag_label() %}
                                     {%- when Some with (badge) %}
-                                    {%- if member.parse.hidden %}
-                                    <span class="tag tag-hidden" title="FFLogs: Hidden">{{ badge }}</span>
-                                    {%- else %}
-                                    <span class="tag tag-hidden" title="Source: report-parse fallback">{{ badge }}</span>
-                                    {%- endif %}
+                                    <span class="tag tag-hidden" title="{{ member.parse.hidden_rail_tag_title() }}">{{ badge }}</span>
                                     {%- when None %}
                                     {%- endmatch %}
 

@@ -144,6 +144,14 @@ impl ParseDisplay {
             None
         }
     }
+
+    pub fn hidden_rail_tag_title(&self) -> &'static str {
+        if matches!(self.source, crate::parse_resolver::ParseSource::ReportParse) {
+            "FFLogs: Originally hidden player"
+        } else {
+            "FFLogs: Hidden"
+        }
+    }
 }
 
 /// 진행도(보스 남은 체력 %) 표시 정보
@@ -448,6 +456,12 @@ mod tests {
         assert_eq!(hidden_plugin.hidden_rail_tag_label(), None);
         assert_eq!(report_parse_fallback.hidden_rail_tag_label(), Some("HID"));
         assert_eq!(visible_plugin.hidden_rail_tag_label(), None);
+        assert_eq!(hidden_plugin.hidden_rail_tag_title(), "FFLogs: Hidden");
+        assert_eq!(
+            report_parse_fallback.hidden_rail_tag_title(),
+            "FFLogs: Originally hidden player"
+        );
+        assert_eq!(visible_plugin.hidden_rail_tag_title(), "FFLogs: Hidden");
     }
 
     #[test]

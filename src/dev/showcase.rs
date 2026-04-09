@@ -275,7 +275,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 build_progress_display(&hidden_dual, None, None, None, None),
             ),
         ],
-        hidden_single,
+        hidden_single.clone(),
     );
 
     let fallback_listing = build_listing(
@@ -352,7 +352,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
     let alliance_listing = build_listing(
         9_004,
         "Section 4: Alliance and dual parses",
-        "Alliance dividers should separate parties cleanly while dual parses and mixed data still render.",
+        "Alliance dividers should separate crowded parties cleanly while mixed parse states still stay aligned.",
         SHOWCASE_CHAOTIC_DUTY,
         3,
         24,
@@ -368,6 +368,36 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 build_progress_display(&dual_parse, None, None, None, Some(2)),
             ),
             build_member(
+                4_004,
+                1,
+                0,
+                19,
+                "Alliance Bulwark",
+                73,
+                hidden_single.clone(),
+                build_progress_display(&hidden_single, None, None, None, None),
+            ),
+            build_member(
+                4_005,
+                2,
+                0,
+                24,
+                "Alliance Oracle",
+                73,
+                fallback_parse.clone(),
+                build_progress_display(&fallback_parse, None, None, Some(4), None),
+            ),
+            build_member(
+                4_006,
+                3,
+                0,
+                38,
+                "Alliance Harrier",
+                73,
+                single_parse.clone(),
+                build_progress_display(&single_parse, None, None, None, None),
+            ),
+            build_member(
                 4_002,
                 8,
                 1,
@@ -378,6 +408,26 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 build_progress_display(&single_parse, None, None, None, None),
             ),
             build_member(
+                4_007,
+                9,
+                1,
+                28,
+                "Alliance Scholar",
+                73,
+                no_parse.clone(),
+                build_progress_display(&no_parse, Some(23), None, None, None),
+            ),
+            build_member(
+                4_008,
+                10,
+                1,
+                22,
+                "Alliance Dragoon",
+                73,
+                estimated_parse.clone(),
+                build_progress_display(&estimated_parse, Some(8), None, None, None),
+            ),
+            build_member(
                 4_003,
                 16,
                 2,
@@ -386,6 +436,26 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 73,
                 no_parse.clone(),
                 build_progress_display(&no_parse, None, None, None, None),
+            ),
+            build_member(
+                4_009,
+                17,
+                2,
+                37,
+                "Alliance Sentinel",
+                73,
+                single_parse.clone(),
+                build_progress_display(&single_parse, None, None, None, None),
+            ),
+            build_member(
+                4_010,
+                18,
+                2,
+                24,
+                "Alliance Whisperer",
+                73,
+                hidden_dual.clone(),
+                build_progress_display(&hidden_dual, None, None, None, None),
             ),
         ],
         build_parse_display(Some(70), Some(83), true, false, false, ParseSource::Plugin),
@@ -470,7 +540,7 @@ mod tests {
         assert!(fallback_row.contains(r#"class="member-parse""#));
         assert!(fallback_row.contains(r#"class="member-tags""#));
         assert!(fallback_row.contains(
-            r#"class="tag tag-hidden" title="Source: report-parse fallback">HID"#
+            r#"class="tag tag-hidden" title="FFLogs: Originally hidden player">HID"#
         ));
         assert!(!fallback_row.contains(">RP</span>"));
         assert!(fallback_row.contains(r#"class="member-link-slot""#));
@@ -530,7 +600,7 @@ mod tests {
 
         let fallback_creator = creator_row_fragment(&html, "Section 2: HID fallback and clears");
         assert!(fallback_creator.contains(
-            r#"class="tag tag-hidden" title="Source: report-parse fallback">HID"#
+            r#"class="tag tag-hidden" title="FFLogs: Originally hidden player">HID"#
         ));
         assert!(!fallback_creator.contains(">RP</span>"));
 

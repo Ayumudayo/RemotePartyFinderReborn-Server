@@ -400,9 +400,9 @@ body > div.container {
     padding: 0.26em 0.2em;
     border-radius: 4px;
     display: grid;
-    grid-template-columns: 1.35rem auto minmax(0, 1fr) auto auto;
+    grid-template-columns: 1.45rem max-content minmax(0, 1fr) auto auto;
     align-items: center;
-    column-gap: 0.32rem;
+    column-gap: 0.44rem;
     transition: background-color 0.12s ease;
 }
 
@@ -435,24 +435,42 @@ body > div.container {
 #listings>.listing .members-list .member-job {
     grid-column: 1;
     justify-content: center;
-    width: 1.55rem;
+    width: 1.45rem;
+    height: 1.45rem;
+    align-self: center;
 }
 
 #listings>.listing .members-list .member-parse {
     grid-column: 2;
     display: inline-flex;
+    align-items: center;
     justify-content: flex-start;
-    gap: 0.22rem;
+    gap: 0.28rem;
     min-width: 0;
+    align-self: center;
 }
 
 /* 아이콘/parse/prog는 고정, 텍스트는 한 줄 + 말줄임 */
 #listings>.listing .members-list .member-info {
     grid-column: 3;
     min-width: 0;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    line-height: 1.2;
+    align-self: center;
     white-space: nowrap;
     overflow: hidden;
+}
+
+#listings>.listing .members-list .member-name {
+    min-width: 0;
+    overflow: hidden;
     text-overflow: ellipsis;
+}
+
+#listings>.listing .members-list .member-world {
+    flex-shrink: 0;
 }
 
 /* 외부 FFLogs 프로필 링크(이름/월드가 확실할 때만 표시) */
@@ -460,6 +478,7 @@ body > div.container {
     grid-column: 5;
     min-width: 0;
     justify-content: flex-end;
+    align-self: center;
 }
 
 #listings>.listing .members-list .fflogs-link {
@@ -847,38 +866,43 @@ body > div.container {
 }
 
 #listings>.listing .members-list.alliance li.member-row {
-    grid-template-columns: 1.15rem auto minmax(0, 1fr) auto;
+    grid-template-columns: 1.35rem max-content minmax(0, 1fr) auto;
     grid-template-areas:
         "job parse info info"
         ". tags tags link";
-    align-items: start;
-    row-gap: 0.16rem;
+    align-items: center;
+    column-gap: 0.42rem;
+    row-gap: 0.2rem;
 }
 
 #listings>.listing .members-list.alliance li.member-row .member-job {
     grid-area: job;
-    padding-top: 0.08rem;
+    align-self: center;
 }
 
 #listings>.listing .members-list.alliance li.member-row .member-parse {
     grid-area: parse;
-    padding-top: 0.02rem;
+    align-self: center;
 }
 
 #listings>.listing .members-list.alliance li.member-row .member-info {
     grid-area: info;
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
     align-items: flex-start;
-    gap: 0.02rem;
-    white-space: normal;
-    overflow: visible;
-    text-overflow: clip;
+    gap: 0.06rem;
     line-height: 1.12;
     overflow-wrap: anywhere;
+    white-space: normal;
+    overflow: visible;
 }
 
-#listings>.listing .members-list.alliance li.member-row .member-info small {
+#listings>.listing .members-list.alliance li.member-row .member-name {
+    overflow: visible;
+    text-overflow: clip;
+}
+
+#listings>.listing .members-list.alliance li.member-row .member-world {
     display: block;
     white-space: normal;
     font-size: 0.82em;
