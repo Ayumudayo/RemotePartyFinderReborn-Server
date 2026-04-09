@@ -7,9 +7,10 @@ WORKDIR /usr/src/app
 # Copy Cargo.toml and Cargo.lock first to cache dependencies
 COPY Cargo.toml Cargo.lock ./
 
-# Create a dummy main.rs to build dependencies
-# This is a common pattern to cache dependencies layer only if they haven't changed
-RUN mkdir src && \
+# Create dummy crate roots to build dependency layers against the current
+# lib + bin package layout.
+RUN mkdir -p src && \
+    echo "pub fn dependency_cache_placeholder() {}" > src/lib.rs && \
     echo "fn main() {println!(\"if you see this, the build broke\")}" > src/main.rs && \
     cargo build --release && \
     rm -rf src
