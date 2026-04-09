@@ -305,10 +305,10 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 1,
                 0,
                 19,
-                "Reliable Sage",
+                "Unparsed Monk",
                 73,
-                single_parse.clone(),
-                build_progress_display(&single_parse, None, None, None, None),
+                no_parse.clone(),
+                build_progress_display(&no_parse, Some(17), None, None, None),
             ),
         ],
         build_parse_display(Some(94), None, false, false, true, ParseSource::Plugin),
@@ -399,7 +399,7 @@ mod tests {
         assert!(html.contains("RP"));
         assert!(html.contains("Estimated match"));
         assert!(html.contains("✅"));
-        assert!(html.contains("%"));
+        assert!(html.contains("Final Boss HP: 17%"));
     }
 
     #[test]
