@@ -134,6 +134,9 @@ impl ParseDisplay {
         }
     }
 
+    /// UI policy helper:
+    /// report-parse fallback is rendered with the same right-rail HID tag
+    /// as hidden FFLogs rows, per the approved listings layout refresh spec.
     pub fn hidden_rail_tag_label(&self) -> Option<&'static str> {
         if self.hidden || matches!(self.source, crate::parse_resolver::ParseSource::ReportParse) {
             Some("HID")
@@ -471,6 +474,63 @@ mod tests {
         assert_eq!(groups[1].members[0].player.name, "Alliance B");
         assert_eq!(groups[2].label, "Alliance C");
         assert_eq!(groups[2].members[0].player.name, "Alliance C");
+    }
+
+    #[test]
+    fn renderable_listing_groups_sparse_parties_without_relabeling() {
+        let mut alliance_c = sample_member("Alliance C Only", 73);
+        alliance_c.party_index = 2;
+        alliance_c.slot_index = 16;
+
+        let listing = sample_renderable_listing(vec![alliance_c]);
+        let groups = listing.alliance_member_groups();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].label, "Alliance C");
+        assert_eq!(groups[0].members[0].player.name, "Alliance C Only");
+    }
+
+    #[test]
+    fn renderable_listing_groups_ignore_out_of_range_party_indices() {
+        let mut alliance_a = sample_member("Alliance A", 73);
+        alliance_a.party_index = 0;
+        alliance_a.slot_index = 0;
+
+        let mut invalid = sample_member("Invalid Alliance", 73);
+        invalid.party_index = 7;
+        invalid.slot_index = 23;
+
+        let listing = sample_renderable_listing(vec![invalid, alliance_a]);
+        let groups = listing.alliance_member_groups();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].label, "Alliance A");
+        assert_eq!(groups[0].members.len(), 1);
+        assert_eq!(groups[0].members[0].player.name, "Alliance A");
+    }
+
+    #[test]
+    fn renderable_listing_groups_preserve_member_order_within_each_alliance() {
+        let mut first = sample_member("First A", 73);
+        first.party_index = 0;
+        first.slot_index = 0;
+
+        let mut second = sample_member("Second A", 73);
+        second.party_index = 0;
+        second.slot_index = 3;
+
+        let mut third = sample_member("Third A", 73);
+        third.party_index = 0;
+        third.slot_index = 6;
+
+        let listing = sample_renderable_listing(vec![second, first, third]);
+        let groups = listing.alliance_member_groups();
+
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].label, "Alliance A");
+        assert_eq!(groups[0].members[0].player.name, "Second A");
+        assert_eq!(groups[0].members[1].player.name, "First A");
+        assert_eq!(groups[0].members[2].player.name, "Third A");
     }
 }
 
