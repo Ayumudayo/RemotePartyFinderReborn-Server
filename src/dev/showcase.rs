@@ -466,12 +466,26 @@ mod tests {
         let html = render_showcase_html().expect("showcase should render");
 
         let fallback_row = member_row_fragment(&html, "Fallback Hero");
+        assert!(fallback_row.contains(r#"class="member-job""#));
+        assert!(fallback_row.contains(r#"class="member-parse""#));
         assert!(fallback_row.contains(r#"class="member-tags""#));
         assert!(fallback_row.contains(
             r#"class="tag tag-hidden" title="Source: report-parse fallback">HID"#
         ));
         assert!(!fallback_row.contains(">RP</span>"));
         assert!(fallback_row.contains(r#"class="member-link-slot""#));
+    }
+
+    #[test]
+    fn alliance_rows_keep_compact_member_subcontainers() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        let alliance_row = member_row_fragment(&html, "Alliance Vanguard");
+        assert!(alliance_row.contains(r#"class="member-job""#));
+        assert!(alliance_row.contains(r#"class="member-parse""#));
+        assert!(alliance_row.contains(r#"class="member-info""#));
+        assert!(alliance_row.contains(r#"class="member-tags""#));
+        assert!(alliance_row.contains(r#"class="member-link-slot""#));
     }
 
     #[test]
