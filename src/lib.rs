@@ -1,6 +1,7 @@
 pub mod api;
 pub mod base64_sestring;
 pub mod config;
+pub mod dev;
 pub mod domain;
 pub mod ffxiv;
 pub mod infra;

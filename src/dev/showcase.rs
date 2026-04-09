@@ -1,0 +1,412 @@
+use askama::Template;
+use chrono::{Duration, Utc};
+use sestring::SeString;
+
+use crate::listing::{
+    ConditionFlags, DutyCategory, DutyFinderSettingsFlags, DutyType, JobFlags, LootRuleFlags,
+    ObjectiveFlags, PartyFinderListing, PartyFinderSlot, SearchAreaFlags,
+};
+use crate::listing_container::QueriedListing;
+use crate::parse_resolver::ParseSource;
+use crate::player::Player;
+use crate::template::listings::{
+    ListingsTemplate, ParseDisplay, ProgressDisplay, RenderableListing, RenderableMember,
+};
+
+fn showcase_text(text: &str) -> SeString {
+    SeString::parse(text.as_bytes()).expect("showcase strings should always parse")
+}
+
+fn parse_color_class(percentile: Option<u8>) -> String {
+    percentile
+        .map(|value| crate::fflogs::percentile_color_class(f32::from(value)).to_string())
+        .unwrap_or_else(|| "parse-none".to_string())
+}
+
+fn build_parse_display(
+    primary_percentile: Option<u8>,
+    secondary_percentile: Option<u8>,
+    has_secondary: bool,
+    hidden: bool,
+    estimated: bool,
+    source: ParseSource,
+) -> ParseDisplay {
+    ParseDisplay::new(
+        primary_percentile,
+        parse_color_class(primary_percentile),
+        secondary_percentile,
+        parse_color_class(secondary_percentile),
+        has_secondary,
+        hidden,
+        estimated,
+        source,
+    )
+}
+
+fn build_progress_display(
+    parse: &ParseDisplay,
+    primary_boss_percentage: Option<u8>,
+    secondary_boss_percentage: Option<u8>,
+    primary_clear_count: Option<u16>,
+    secondary_clear_count: Option<u16>,
+) -> ProgressDisplay {
+    ProgressDisplay::new(
+        primary_boss_percentage,
+        secondary_boss_percentage,
+        parse.primary_percentile,
+        parse.secondary_percentile,
+        primary_clear_count,
+        secondary_clear_count,
+        parse.has_secondary,
+        parse.hidden,
+    )
+}
+
+fn build_player(content_id: u64, name: &str, home_world: u16) -> Player {
+    Player {
+        content_id,
+        name: name.to_string(),
+        home_world,
+        current_world: home_world,
+        last_seen: Utc::now() - Duration::minutes(5),
+        seen_count: 3,
+        account_id: "-1".to_string(),
+    }
+}
+
+fn alliance_party_label(party_index: u8) -> &'static str {
+    match party_index {
+        0 => "Alliance A",
+        1 => "Alliance B",
+        2 => "Alliance C",
+        3 => "Alliance D",
+        4 => "Alliance E",
+        5 => "Alliance F",
+        _ => "Alliance ?",
+    }
+}
+
+fn build_member(
+    content_id: u64,
+    slot_index: usize,
+    party_index: u8,
+    job_id: u8,
+    name: &str,
+    home_world: u16,
+    parse: ParseDisplay,
+    progress: ProgressDisplay,
+) -> RenderableMember {
+    RenderableMember {
+        job_id,
+        player: build_player(content_id, name, home_world),
+        parse,
+        progress,
+        slot_index,
+        party_index,
+        party_header: None,
+    }
+}
+
+fn build_listing(
+    id: u32,
+    name: &str,
+    description: &str,
+    num_parties: u8,
+    slots_available: u8,
+    mut members: Vec<RenderableMember>,
+    leader_parse: ParseDisplay,
+) -> RenderableListing {
+    let slots_len = usize::from(slots_available);
+    let mut jobs_present = vec![0; slots_len];
+    let mut member_content_ids = vec![0_i64; slots_len];
+    let mut member_jobs = vec![0; slots_len];
+
+    for member in &mut members {
+        if member.slot_index >= slots_len {
+            continue;
+        }
+
+        if num_parties >= 3 && member.slot_index % 8 == 0 {
+            member.party_header = Some(alliance_party_label(member.party_index));
+        }
+
+        jobs_present[member.slot_index] = member.job_id;
+        member_content_ids[member.slot_index] = member.player.content_id as i64;
+        member_jobs[member.slot_index] = member.job_id;
+    }
+
+    let open_slot = PartyFinderSlot {
+        accepting: JobFlags::PALADIN
+            | JobFlags::WHITE_MAGE
+            | JobFlags::BLACK_MAGE
+            | JobFlags::DANCER,
+    };
+
+    let listing = PartyFinderListing {
+        id,
+        content_id_lower: id.saturating_mul(10),
+        name: showcase_text(name),
+        description: showcase_text(description),
+        created_world: 73,
+        home_world: 73,
+        current_world: 73,
+        category: DutyCategory::None,
+        duty: 55,
+        duty_type: DutyType::Normal,
+        beginners_welcome: true,
+        seconds_remaining: 1800,
+        min_item_level: 730,
+        num_parties,
+        slots_available,
+        last_server_restart: 0,
+        objective: ObjectiveFlags::PRACTICE | ObjectiveFlags::DUTY_COMPLETION,
+        conditions: ConditionFlags::DUTY_COMPLETE,
+        duty_finder_settings: DutyFinderSettingsFlags::NONE,
+        loot_rules: LootRuleFlags::NONE,
+        search_area: SearchAreaFlags::DATA_CENTRE,
+        slots: (0..slots_len)
+            .map(|_| PartyFinderSlot {
+                accepting: open_slot.accepting,
+            })
+            .collect(),
+        jobs_present,
+        member_content_ids,
+        member_jobs,
+        leader_content_id: members
+            .first()
+            .map(|member| member.player.content_id)
+            .unwrap_or(0),
+    };
+
+    let now = Utc::now();
+    let container = QueriedListing {
+        created_at: now - Duration::minutes(25),
+        updated_at: now - Duration::minutes(3),
+        updated_minute: now - Duration::minutes(3),
+        time_left: 1800.0,
+        listing,
+    };
+
+    RenderableListing {
+        container,
+        members,
+        leader_parse,
+    }
+}
+
+fn build_showcase_listings() -> Vec<RenderableListing> {
+    let hidden_single = build_parse_display(None, None, false, true, false, ParseSource::Plugin);
+    let hidden_dual =
+        build_parse_display(Some(97), Some(88), true, true, false, ParseSource::Plugin);
+    let fallback_parse = build_parse_display(
+        Some(91),
+        None,
+        false,
+        false,
+        false,
+        ParseSource::ReportParse,
+    );
+    let estimated_parse =
+        build_parse_display(Some(52), None, false, false, true, ParseSource::Plugin);
+    let single_parse =
+        build_parse_display(Some(67), None, false, false, false, ParseSource::Plugin);
+    let dual_parse =
+        build_parse_display(Some(45), Some(82), true, false, false, ParseSource::Plugin);
+    let no_parse = build_parse_display(None, None, false, false, false, ParseSource::None);
+
+    let hidden_listing = build_listing(
+        9_001,
+        "Section 1: HID and unknown job",
+        "Hidden FFLogs states, including an unknown job slot and a hidden dual-parse member.",
+        1,
+        8,
+        vec![
+            build_member(
+                1_001,
+                0,
+                0,
+                0,
+                "Mystery Raider",
+                73,
+                hidden_single.clone(),
+                build_progress_display(&hidden_single, None, None, None, None),
+            ),
+            build_member(
+                1_002,
+                1,
+                0,
+                19,
+                "Silent Paladin",
+                73,
+                hidden_dual.clone(),
+                build_progress_display(&hidden_dual, None, None, None, None),
+            ),
+        ],
+        hidden_single,
+    );
+
+    let fallback_listing = build_listing(
+        9_002,
+        "Section 2: RP fallback and clears",
+        "Report-parse fallback data with a visible RP badge and clear-count coverage.",
+        1,
+        8,
+        vec![
+            build_member(
+                2_001,
+                0,
+                0,
+                19,
+                "Fallback Hero",
+                73,
+                fallback_parse.clone(),
+                build_progress_display(&fallback_parse, None, None, Some(5), None),
+            ),
+            build_member(
+                2_002,
+                1,
+                0,
+                19,
+                "Steady Scholar",
+                73,
+                single_parse.clone(),
+                build_progress_display(&single_parse, None, None, None, None),
+            ),
+        ],
+        build_parse_display(
+            Some(88),
+            None,
+            false,
+            false,
+            false,
+            ParseSource::ReportParse,
+        ),
+    );
+
+    let estimated_listing = build_listing(
+        9_003,
+        "Section 3: Estimated match and boss HP",
+        "Estimated matching should render the question mark while uncleared progress keeps a boss HP marker.",
+        1,
+        8,
+        vec![
+            build_member(
+                3_001,
+                0,
+                0,
+                19,
+                "Guessed Dragoon",
+                73,
+                estimated_parse.clone(),
+                build_progress_display(&estimated_parse, Some(17), None, None, None),
+            ),
+            build_member(
+                3_002,
+                1,
+                0,
+                19,
+                "Reliable Sage",
+                73,
+                single_parse.clone(),
+                build_progress_display(&single_parse, None, None, None, None),
+            ),
+        ],
+        build_parse_display(Some(94), None, false, false, true, ParseSource::Plugin),
+    );
+
+    let alliance_listing = build_listing(
+        9_004,
+        "Section 4: Alliance and dual parses",
+        "Alliance dividers should separate parties cleanly while dual parses and mixed data still render.",
+        3,
+        24,
+        vec![
+            build_member(
+                4_001,
+                0,
+                0,
+                19,
+                "Alliance Vanguard",
+                73,
+                dual_parse.clone(),
+                build_progress_display(&dual_parse, None, None, None, Some(2)),
+            ),
+            build_member(
+                4_002,
+                8,
+                1,
+                19,
+                "Alliance Support",
+                73,
+                single_parse.clone(),
+                build_progress_display(&single_parse, None, None, None, None),
+            ),
+            build_member(
+                4_003,
+                16,
+                2,
+                19,
+                "Alliance Reserve",
+                73,
+                no_parse.clone(),
+                build_progress_display(&no_parse, None, None, None, None),
+            ),
+        ],
+        build_parse_display(Some(70), Some(83), true, false, false, ParseSource::Plugin),
+    );
+
+    let empty_members_listing = build_listing(
+        9_005,
+        "Section 5: Empty member detail",
+        "A listing with no enriched member information should show the empty-state copy.",
+        1,
+        8,
+        Vec::new(),
+        no_parse,
+    );
+
+    vec![
+        hidden_listing,
+        fallback_listing,
+        estimated_listing,
+        alliance_listing,
+        empty_members_listing,
+    ]
+}
+
+pub fn render_showcase_html() -> anyhow::Result<String> {
+    let template = ListingsTemplate {
+        containers: build_showcase_listings(),
+        lang: crate::ffxiv::Language::English,
+    };
+
+    Ok(template.render()?)
+}
+
+pub fn showcase_output_relative_path() -> &'static str {
+    "output/showcase/listings.html"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_showcase_html;
+
+    #[test]
+    fn render_showcase_html_contains_all_marker_states() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        assert!(html.contains("HID"));
+        assert!(html.contains("RP"));
+        assert!(html.contains("Estimated match"));
+        assert!(html.contains("✅"));
+        assert!(html.contains("%"));
+    }
+
+    #[test]
+    fn showcase_contains_alliance_and_empty_member_examples() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        assert!(html.contains("Alliance"));
+        assert!(html.contains("No information available for other members"));
+    }
+}
