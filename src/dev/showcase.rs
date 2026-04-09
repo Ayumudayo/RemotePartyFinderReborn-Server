@@ -13,6 +13,37 @@ use crate::template::listings::{
     ListingsTemplate, ParseDisplay, ProgressDisplay, RenderableListing, RenderableMember,
 };
 
+#[derive(Clone, Copy)]
+struct ShowcaseDuty {
+    category: DutyCategory,
+    duty: u16,
+}
+
+const SHOWCASE_EXTREME_DUTY: ShowcaseDuty = ShowcaseDuty {
+    category: DutyCategory::HighEndDuty,
+    duty: 1077,
+};
+
+const SHOWCASE_SAVAGE_DUTY: ShowcaseDuty = ShowcaseDuty {
+    category: DutyCategory::HighEndDuty,
+    duty: 1069,
+};
+
+const SHOWCASE_SAVAGE_ALT_DUTY: ShowcaseDuty = ShowcaseDuty {
+    category: DutyCategory::HighEndDuty,
+    duty: 1071,
+};
+
+const SHOWCASE_ULTIMATE_DUTY: ShowcaseDuty = ShowcaseDuty {
+    category: DutyCategory::HighEndDuty,
+    duty: 1006,
+};
+
+const SHOWCASE_CHAOTIC_DUTY: ShowcaseDuty = ShowcaseDuty {
+    category: DutyCategory::HighEndDuty,
+    duty: 1010,
+};
+
 fn showcase_text(text: &str) -> SeString {
     SeString::parse(text.as_bytes()).expect("showcase strings should always parse")
 }
@@ -111,6 +142,7 @@ fn build_listing(
     id: u32,
     name: &str,
     description: &str,
+    showcase_duty: ShowcaseDuty,
     num_parties: u8,
     slots_available: u8,
     mut members: Vec<RenderableMember>,
@@ -150,8 +182,8 @@ fn build_listing(
         created_world: 73,
         home_world: 73,
         current_world: 73,
-        category: DutyCategory::None,
-        duty: 55,
+        category: showcase_duty.category,
+        duty: showcase_duty.duty,
         duty_type: DutyType::Normal,
         beginners_welcome: true,
         seconds_remaining: 1800,
@@ -218,6 +250,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
         9_001,
         "Section 1: HID and unknown job",
         "Hidden FFLogs states, including an unknown job slot and a hidden dual-parse member.",
+        SHOWCASE_EXTREME_DUTY,
         1,
         8,
         vec![
@@ -249,6 +282,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
         9_002,
         "Section 2: RP fallback and clears",
         "Report-parse fallback data with a visible RP badge and clear-count coverage.",
+        SHOWCASE_SAVAGE_DUTY,
         1,
         8,
         vec![
@@ -287,6 +321,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
         9_003,
         "Section 3: Estimated match and boss HP",
         "Estimated matching should render the question mark while uncleared progress keeps a boss HP marker.",
+        SHOWCASE_SAVAGE_ALT_DUTY,
         1,
         8,
         vec![
@@ -318,6 +353,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
         9_004,
         "Section 4: Alliance and dual parses",
         "Alliance dividers should separate parties cleanly while dual parses and mixed data still render.",
+        SHOWCASE_CHAOTIC_DUTY,
         3,
         24,
         vec![
@@ -359,6 +395,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
         9_005,
         "Section 5: Empty member detail",
         "A listing with no enriched member information should show the empty-state copy.",
+        SHOWCASE_ULTIMATE_DUTY,
         1,
         8,
         Vec::new(),
@@ -467,5 +504,14 @@ mod tests {
 
         assert!(html.contains(r#"<li class="party-divider">Alliance B</li>"#));
         assert!(html.contains("No information available for other members"));
+    }
+
+    #[test]
+    fn showcase_fixture_listings_are_high_end_visible_by_default() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        assert!(html.contains(r#"data-high-end="true""#));
+        assert!(html.contains(r#"data-duty-id="1077""#));
+        assert!(html.contains(r#"data-duty-id="1010""#));
     }
 }
