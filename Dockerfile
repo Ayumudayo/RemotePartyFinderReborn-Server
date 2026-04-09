@@ -19,9 +19,14 @@ RUN mkdir -p src && \
 COPY src ./src
 COPY templates ./templates
 
-# Build the actual application
-# We need to touch the main.rs file to trigger a rebuild
-RUN touch src/main.rs && cargo build --release
+# Build the actual application.
+# The dependency-cache layer above compiles placeholder crate roots, so after
+# copying the real sources we force Cargo to reconsider the library root, bin
+# entrypoints, and Askama template inputs instead of only rebuilding main.rs.
+RUN touch src/lib.rs src/main.rs && \
+    if [ -d src/bin ]; then find src/bin -type f -exec touch {} +; fi && \
+    find templates -type f -exec touch {} + && \
+    cargo build --release
 
 # 2. Runtime stage
 FROM debian:bookworm-slim
