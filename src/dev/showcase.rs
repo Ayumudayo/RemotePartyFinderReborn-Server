@@ -280,8 +280,8 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
 
     let fallback_listing = build_listing(
         9_002,
-        "Section 2: RP fallback and clears",
-        "Report-parse fallback data with a visible RP badge and clear-count coverage.",
+        "Section 2: HID fallback and clears",
+        "Report-parse fallback data should reuse the HID right-rail tag and clear-count coverage.",
         SHOWCASE_SAVAGE_DUTY,
         1,
         8,
@@ -462,24 +462,36 @@ mod tests {
     }
 
     #[test]
+    fn fallback_rows_render_hidden_tag_in_right_rail() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        let fallback_row = member_row_fragment(&html, "Fallback Hero");
+        assert!(fallback_row.contains(r#"class="member-tags""#));
+        assert!(fallback_row.contains(
+            r#"class="tag tag-hidden" title="Source: report-parse fallback">HID"#
+        ));
+        assert!(!fallback_row.contains(">RP</span>"));
+        assert!(fallback_row.contains(r#"class="member-link-slot""#));
+    }
+
+    #[test]
     fn render_showcase_html_contains_all_marker_states() {
         let html = render_showcase_html().expect("showcase should render");
 
         let hidden_row = member_row_fragment(&html, "Mystery Raider");
-        assert!(hidden_row.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
-
-        let fallback_row = member_row_fragment(&html, "Fallback Hero");
-        assert!(fallback_row.contains(
-            r#"class="parse-source-badge" title="Source: report-parse fallback">RP"#
-        ));
+        assert!(hidden_row.contains(r#"class="member-tags""#));
+        assert!(hidden_row.contains(r#"class="tag tag-hidden" title="FFLogs: Hidden">HID"#));
 
         let estimated_row = member_row_fragment(&html, "Guessed Dragoon");
         assert!(estimated_row.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
 
-        assert!(fallback_row.contains(r#"title="Clears: 5">✅5</span>"#));
+        let fallback_row = member_row_fragment(&html, "Fallback Hero");
+        assert!(fallback_row.contains(r#"class="tag tag-clear" title="Clears: 5">✅5</span>"#));
 
         let boss_hp_row = member_row_fragment(&html, "Unparsed Monk");
-        assert!(boss_hp_row.contains(r#"title="Final Boss HP: 17%">17%</span>"#));
+        assert!(boss_hp_row.contains(
+            r#"class="tag tag-boss" title="Final Boss HP: 17%">17%</span>"#
+        ));
     }
 
     #[test]
@@ -487,12 +499,13 @@ mod tests {
         let html = render_showcase_html().expect("showcase should render");
 
         let hidden_creator = creator_row_fragment(&html, "Section 1: HID and unknown job");
-        assert!(hidden_creator.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
+        assert!(hidden_creator.contains(r#"class="tag tag-hidden" title="FFLogs: Hidden">HID"#));
 
-        let fallback_creator = creator_row_fragment(&html, "Section 2: RP fallback and clears");
+        let fallback_creator = creator_row_fragment(&html, "Section 2: HID fallback and clears");
         assert!(fallback_creator.contains(
-            r#"class="parse-source-badge" title="Source: report-parse fallback">RP"#
+            r#"class="tag tag-hidden" title="Source: report-parse fallback">HID"#
         ));
+        assert!(!fallback_creator.contains(">RP</span>"));
 
         let estimated_creator = creator_row_fragment(&html, "Section 3: Estimated match and boss HP");
         assert!(estimated_creator.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
@@ -502,7 +515,12 @@ mod tests {
     fn showcase_contains_alliance_and_empty_member_examples() {
         let html = render_showcase_html().expect("showcase should render");
 
-        assert!(html.contains(r#"<li class="party-divider">Alliance B</li>"#));
+        assert!(html.contains(r#"class="party party-alliance""#));
+        assert!(html.contains(r#"class="party-slots party-slots-24""#));
+        assert!(html.contains(r#"class="alliance-columns""#));
+        assert!(html.contains(r#"class="alliance-column""#));
+        assert!(html.contains(r#"class="alliance-heading">Alliance B</div>"#));
+        assert!(!html.contains(r#"<li class="party-divider">Alliance B</li>"#));
         assert!(html.contains("No information available for other members"));
     }
 
