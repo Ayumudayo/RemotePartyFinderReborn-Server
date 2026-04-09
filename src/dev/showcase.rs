@@ -420,8 +420,10 @@ mod tests {
         let estimated_row = member_row_fragment(&html, "Guessed Dragoon");
         assert!(estimated_row.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
 
-        assert!(html.contains("✅"));
-        assert!(html.contains("Final Boss HP: 17%"));
+        assert!(fallback_row.contains(r#"title="Clears: 5">✅5</span>"#));
+
+        let boss_hp_row = member_row_fragment(&html, "Unparsed Monk");
+        assert!(boss_hp_row.contains(r#"title="Final Boss HP: 17%">17%</span>"#));
     }
 
     #[test]
