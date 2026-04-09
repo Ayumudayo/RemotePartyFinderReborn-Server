@@ -3,6 +3,10 @@ name = "RemotePartyFinder-Reborn"
 version = "1.0.0"
 edition = "2021"
 
+[lib]
+name = "remote_party_finder_reborn"
+path = "src/lib.rs"
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]

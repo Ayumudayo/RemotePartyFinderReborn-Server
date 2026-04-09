@@ -1,54 +1,11 @@
-use crate::config::Config;
 use anyhow::Context;
+use remote_party_finder_reborn::config::Config;
 use std::borrow::Cow;
 use std::path::Path;
 use std::sync::Arc;
 use tokio::fs::File;
 use tokio::io::AsyncReadExt;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
-
-// =============================================================================
-// 유틸리티 모듈
-// =============================================================================
-mod base64_sestring;
-mod config;
-mod parse_resolver;
-mod sestring_ext;
-
-// =============================================================================
-// FFXIV 데이터 모듈
-// =============================================================================
-mod ffxiv;
-
-// =============================================================================
-// 도메인 레이어 (비즈니스 로직)
-// =============================================================================
-mod domain;
-// 하위 호환성을 위한 re-export
-pub use domain::listing;
-pub use domain::listing::container as listing_container;
-pub use domain::player;
-pub use domain::stats;
-
-// =============================================================================
-// 인프라 레이어 (외부 시스템 연동)
-// =============================================================================
-mod infra;
-// 하위 호환성을 위한 re-export
-pub use infra::mongo;
-pub use infra::fflogs;
-pub use infra::report_parse;
-
-// =============================================================================
-// 웹 레이어
-// =============================================================================
-mod api;
-mod template;
-mod web;
-mod ws;
-
-#[cfg(test)]
-mod test;
 
 fn env_flag_enabled(name: &str) -> bool {
     match std::env::var(name) {
@@ -136,7 +93,7 @@ async fn main() {
     };
 
     let config = Arc::new(config);
-    let result = self::web::start(Arc::clone(&config)).await;
+    let result = remote_party_finder_reborn::web::start(Arc::clone(&config)).await;
 
     if let Err(e) = result {
         tracing::error!("Server error: {}", e);
