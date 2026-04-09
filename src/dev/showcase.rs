@@ -389,7 +389,7 @@ pub fn showcase_output_relative_path() -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::render_showcase_html;
+    use super::{render_showcase_html, showcase_output_relative_path};
 
     fn member_row_fragment<'a>(html: &'a str, member_name: &str) -> &'a str {
         let name_index = html
@@ -403,6 +403,25 @@ mod tests {
             .map(|offset| name_index + offset + "</li>".len())
             .expect("member row end");
         &html[start..end]
+    }
+
+    fn creator_row_fragment<'a>(html: &'a str, listing_name: &str) -> &'a str {
+        let name_index = html
+            .find(listing_name)
+            .expect("listing name should exist in rendered HTML");
+        let start = html[..name_index]
+            .rfind("<div class=\"item creator\">")
+            .expect("creator row start");
+        let end = html[name_index..]
+            .find("</div>")
+            .map(|offset| name_index + offset + "</div>".len())
+            .expect("creator row end");
+        &html[start..end]
+    }
+
+    #[test]
+    fn showcase_output_relative_path_is_stable() {
+        assert_eq!(showcase_output_relative_path(), "output/showcase/listings.html");
     }
 
     #[test]
@@ -424,6 +443,22 @@ mod tests {
 
         let boss_hp_row = member_row_fragment(&html, "Unparsed Monk");
         assert!(boss_hp_row.contains(r#"title="Final Boss HP: 17%">17%</span>"#));
+    }
+
+    #[test]
+    fn creator_rows_mirror_member_marker_states() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        let hidden_creator = creator_row_fragment(&html, "Section 1: HID and unknown job");
+        assert!(hidden_creator.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
+
+        let fallback_creator = creator_row_fragment(&html, "Section 2: RP fallback and clears");
+        assert!(fallback_creator.contains(
+            r#"class="parse-source-badge" title="Source: report-parse fallback">RP"#
+        ));
+
+        let estimated_creator = creator_row_fragment(&html, "Section 3: Estimated match and boss HP");
+        assert!(estimated_creator.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
     }
 
     #[test]
