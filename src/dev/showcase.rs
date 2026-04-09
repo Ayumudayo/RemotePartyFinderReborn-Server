@@ -391,15 +391,35 @@ pub fn showcase_output_relative_path() -> &'static str {
 mod tests {
     use super::render_showcase_html;
 
+    fn member_row_fragment<'a>(html: &'a str, member_name: &str) -> &'a str {
+        let name_index = html
+            .find(member_name)
+            .expect("member name should exist in rendered HTML");
+        let start = html[..name_index]
+            .rfind("<li class=\"member-row")
+            .expect("member row start");
+        let end = html[name_index..]
+            .find("</li>")
+            .map(|offset| name_index + offset + "</li>".len())
+            .expect("member row end");
+        &html[start..end]
+    }
+
     #[test]
     fn render_showcase_html_contains_all_marker_states() {
         let html = render_showcase_html().expect("showcase should render");
 
-        assert!(html.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
-        assert!(html.contains(
+        let hidden_row = member_row_fragment(&html, "Mystery Raider");
+        assert!(hidden_row.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
+
+        let fallback_row = member_row_fragment(&html, "Fallback Hero");
+        assert!(fallback_row.contains(
             r#"class="parse-source-badge" title="Source: report-parse fallback">RP"#
         ));
-        assert!(html.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
+
+        let estimated_row = member_row_fragment(&html, "Guessed Dragoon");
+        assert!(estimated_row.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
+
         assert!(html.contains("✅"));
         assert!(html.contains("Final Boss HP: 17%"));
     }
