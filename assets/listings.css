@@ -265,72 +265,90 @@ body > div.container {
 }
 
 #listings>.listing .party {
-    margin-top: .5em;
+    margin-top: .6em;
+    display: flex;
+    align-items: center;
+    gap: .85em;
+    flex-wrap: wrap;
+}
+
+#listings>.listing .party>.party-slots {
     display: grid;
-    grid-template-columns: repeat(auto-fit, 2em);
-    gap: .5em;
+    grid-template-columns: repeat(8, 2em);
+    gap: .42em;
+    align-items: center;
+}
+
+#listings>.listing .party.party-alliance {
+    align-items: flex-start;
 }
 
 #listings>.listing .party>.total {
     align-self: center;
-    justify-self: center;
+    justify-self: flex-start;
+    min-width: 2.9em;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
 }
 
-#listings>.listing .party>.slot {
+#listings>.listing .party.party-alliance>.total {
+    padding-top: .1em;
+}
+
+#listings>.listing .party .slot {
     width: 2em;
     height: 2em;
     border: 1px solid currentColor;
-    margin-right: .5em;
 }
 
-#listings>.listing .party>.slot:not(.filled).dps.tank {
+#listings>.listing .party .slot:not(.filled).dps.tank {
     background: linear-gradient(to bottom, var(--tank-blue) 0%, var(--tank-blue) 50%, var(--dps-red) 50%);
 }
 
-#listings>.listing .party>.slot:not(.filled).dps.healer {
+#listings>.listing .party .slot:not(.filled).dps.healer {
     background: linear-gradient(to bottom, var(--healer-green) 0%, var(--healer-green) 50%, var(--dps-red) 50%);
 }
 
-#listings>.listing .party>.slot:not(.filled).tank.healer {
+#listings>.listing .party .slot:not(.filled).tank.healer {
     background: linear-gradient(to bottom, var(--tank-blue) 0%, var(--tank-blue) 50%, var(--healer-green) 50%);
 }
 
-#listings>.listing .party>.slot:not(.filled).tank.healer.dps {
+#listings>.listing .party .slot:not(.filled).tank.healer.dps {
     background: linear-gradient(to bottom, var(--tank-blue) 0%, var(--tank-blue) 33%, var(--healer-green) 33%, var(--healer-green) 66%, var(--dps-red) 66%);
 }
 
-#listings>.listing .party>.slot:not(.filled).dps {
+#listings>.listing .party .slot:not(.filled).dps {
     background-color: var(--dps-red);
 }
 
-#listings>.listing .party>.slot.filled {
+#listings>.listing .party .slot.filled {
     background-color: var(--slot-background);
     border-color: var(--icon-gold);
 }
 
-#listings>.listing .party>.slot.empty {
+#listings>.listing .party .slot.empty {
     background-color: var(--slot-empty);
 }
 
-#listings>.listing .party>.slot.dps {
+#listings>.listing .party .slot.dps {
     background-color: var(--dps-red);
 }
 
-#listings>.listing .party>.slot.healer {
+#listings>.listing .party .slot.healer {
     background-color: var(--healer-green);
 }
 
-#listings>.listing .party>.slot.tank {
+#listings>.listing .party .slot.tank {
     background-color: var(--tank-blue);
 }
 
-#listings>.listing .party>.slot>svg {
+#listings>.listing .party .slot>svg {
     width: 100%;
     height: 100%;
     fill: var(--icon-gold);
 }
 
-#listings>.listing .party>.slot.filled:not(.dps):not(.healer):not(.tank)>svg {
+#listings>.listing .party .slot.filled:not(.dps):not(.healer):not(.tank)>svg {
     fill: #C6C6C6;
 }
 
@@ -352,7 +370,7 @@ body > div.container {
 }
 
 #listings>.listing .members-list {
-    margin-top: 0.5em;
+    margin-top: 0.6em;
     font-size: 0.9em;
 }
 
@@ -368,85 +386,71 @@ body > div.container {
 
 #listings>.listing .members-list ul {
     list-style: none;
-    padding-left: 1em;
+    padding-left: 0;
     margin: 0.2em 0;
 }
 
-#listings>.listing .members-list li {
+#listings>.listing .members-list li.member-row {
     margin-bottom: 0;
-    padding: 0.1em 0.16em;
-    border-radius: 3px;
-    display: flex;
+    padding: 0.26em 0.2em;
+    border-radius: 4px;
+    display: grid;
+    grid-template-columns: 1.35rem auto auto minmax(0, 1fr) auto auto;
     align-items: center;
-    gap: 0.3em;
-    flex-wrap: nowrap;
+    column-gap: 0.42rem;
     transition: background-color 0.12s ease;
 }
 
-#listings>.listing .members-list li.party-divider {
-    margin: 0.45em 0 0.2em;
-    padding: 0.18em 0.45em;
-    border-radius: 4px;
-    display: block;
-    font-size: 0.72em;
-    font-weight: 700;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--meta-text);
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.14);
-}
-
-#listings>.listing .members-list li.party-divider:first-child {
-    margin-top: 0;
-}
-
 /* 멤버 행 구분선: 버튼-행 매칭 혼동 완화 */
-#listings>.listing .members-list li+li {
+#listings>.listing .members-list li.member-row+li.member-row {
     border-top: 2.25px solid rgba(255, 255, 255, 0.11);
     margin-top: 0;
-    padding-top: 0.2em;
+    padding-top: 0.28em;
 }
 
-#listings>.listing .members-list li:hover {
+#listings>.listing .members-list li.member-row:hover {
     background-color: rgba(255, 255, 255, 0.04);
 }
 
-#listings>.listing .members-list li.party-divider+li.member-row {
-    border-top: none;
-    margin-top: 0;
-    padding-top: 0.1em;
-}
-
 /* Pico는 small을 block/100%로 잡아 줄바꿈이 발생할 수 있음 */
-#listings>.listing .members-list li small {
+#listings>.listing .members-list li.member-row small {
     display: inline;
     width: auto;
     margin: 0;
     white-space: nowrap;
 }
 
+#listings>.listing .members-list .member-job,
+#listings>.listing .members-list .member-parse,
+#listings>.listing .members-list .member-link-slot {
+    display: inline-flex;
+    align-items: center;
+}
+
+#listings>.listing .members-list .member-job {
+    justify-content: center;
+    width: 1.35rem;
+}
+
+#listings>.listing .members-list .member-parse {
+    min-width: 0;
+}
+
 /* 아이콘/parse/prog는 고정, 텍스트는 한 줄 + 말줄임 */
-#listings>.listing .members-list li .member-info {
-    flex: 1 1 auto;
+#listings>.listing .members-list .member-info {
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    /* 이름이 짧을 때 progress가 너무 멀어지지 않도록, 성장 폭을 제한 */
-    max-width: clamp(18ch, 42vw, 32ch);
 }
 
 /* 외부 FFLogs 프로필 링크(이름/월드가 확실할 때만 표시) */
-#listings>.listing .members-list li .member-link-slot {
-    flex: 0 0 auto;
+#listings>.listing .members-list .member-link-slot {
     width: 2.9em;
-    display: inline-flex;
     justify-content: flex-end;
 }
 
-#listings>.listing .members-list li .fflogs-link {
-    flex: 0 0 auto;
+#listings>.listing .members-list .fflogs-link {
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -466,46 +470,86 @@ body > div.container {
     transition: opacity 0.12s ease, background-color 0.12s ease, border-color 0.12s ease, color 0.12s ease;
 }
 
-#listings>.listing .members-list li .fflogs-link::after {
+#listings>.listing .members-list .fflogs-link::after {
     content: "↗";
     font-size: 0.78em;
     line-height: 1;
     opacity: 0.88;
 }
 
-#listings>.listing .members-list li .fflogs-link:visited {
+#listings>.listing .members-list .fflogs-link:visited {
     color: var(--meta-text);
     border-color: rgba(255, 255, 255, 0.2);
     background-color: rgba(255, 255, 255, 0.06);
 }
 
-#listings>.listing .members-list li .fflogs-link:hover {
+#listings>.listing .members-list .fflogs-link:hover {
     opacity: 1;
     color: var(--text);
     border-color: rgba(255, 255, 255, 0.35);
     background-color: rgba(255, 255, 255, 0.1);
 }
 
-#listings>.listing .members-list li .fflogs-link:focus-visible {
+#listings>.listing .members-list .fflogs-link:focus-visible {
     opacity: 1;
 }
 
-/* 최종 보스 HP% 전용 컬럼(미클리어자만 표시). 빈 경우에도 폭은 유지 */
-#listings>.listing .members-list li .member-prog {
-    flex: 0 0 auto;
-    width: 2.8em;
+#listings>.listing .members-list .member-tags {
     display: inline-flex;
+    align-items: center;
     justify-content: flex-end;
+    gap: 0.32rem;
+    min-height: 1.55em;
 }
 
-#listings>.listing .members-list li .member-prog .prog {
-    margin-right: 0;
+#listings>.listing .members-list .tag,
+#listings>.listing .creator .tag {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 2.1em;
+    height: 1.55em;
+    padding: 0 0.45em;
+    border-radius: 4px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    background-color: rgba(255, 255, 255, 0.06);
+    color: var(--text);
+    font-size: 0.78em;
+    font-weight: 700;
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    box-sizing: border-box;
+    white-space: nowrap;
+}
+
+#listings>.listing .members-list .tag-hidden,
+#listings>.listing .creator .tag-hidden {
+    color: #f0dfc1;
+    background-color: rgba(99, 84, 55, 0.32);
+    border-color: rgba(215, 181, 120, 0.34);
+}
+
+#listings>.listing .members-list .tag-clear,
+#listings>.listing .creator .tag-clear {
+    color: #dff8e7;
+    background-color: rgba(38, 103, 71, 0.34);
+    border-color: rgba(96, 197, 144, 0.34);
+}
+
+#listings>.listing .members-list .tag-boss,
+#listings>.listing .creator .tag-boss {
+    color: var(--text);
+    background-color: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.18);
 }
 
 #listings>.listing .members-list .job-icon {
     width: 1.2em;
     height: 1.2em;
     flex-shrink: 0;
+    display: block;
+    fill: currentColor;
+    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
 }
 
 #listings>.listing .members-list .job-unknown {
@@ -563,7 +607,7 @@ body > div.container {
 #listings>.listing .members-list .no-members {
     color: var(--meta-text);
     font-size: 0.85em;
-    margin: 0.3em 0 0.3em 1em;
+    margin: 0.3em 0;
 }
 
 /* =============================================================================
@@ -594,7 +638,7 @@ body > div.container {
 /* Parse percentile 표시 */
 #listings>.listing .members-list .parse,
 #listings>.listing .creator .parse {
-    margin-right: 0.3em;
+    margin-right: 0;
 }
 
 /* 파티장 이름과 parse 간격 */
@@ -713,35 +757,8 @@ body > div.container {
     vertical-align: middle;
 }
 
-#listings>.listing .members-list .parse-source-badge,
-#listings>.listing .creator .parse-source-badge {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    min-width: 1.8em;
-    height: 1.2em;
-    padding: 0 0.35em;
-    border-radius: 999px;
-    font-weight: 800;
-    font-size: 0.62em;
-    line-height: 1;
-    letter-spacing: 0.04em;
-    color: #d9f7f4;
-    background-color: rgba(39, 140, 129, 0.18);
-    border: 1px solid rgba(78, 188, 176, 0.32);
-    vertical-align: middle;
-}
-
-#listings>.listing .members-list .parse-source-badge {
-    margin-right: 0.3em;
-}
-
-#listings>.listing .creator .parse-source-badge {
-    margin-left: 0.35em;
-}
-
 #listings>.listing .members-list .est {
-    margin-right: 0.3em;
+    margin-right: 0;
 }
 
 #listings>.listing .creator .est {
@@ -763,6 +780,10 @@ body > div.container {
 /* 파티장 progress는 오른쪽 여백 불필요 (맨 끝이거나 아이콘 앞) */
 #listings>.listing .creator .prog {
     margin-right: 0;
+    margin-left: 0.35em;
+}
+
+#listings>.listing .creator .tag {
     margin-left: 0.35em;
 }
 
@@ -788,6 +809,67 @@ body > div.container {
 #listings>.listing .creator .prog-dual {
     margin-right: 0;
     margin-left: 0.35em;
+}
+
+#listings>.listing .members-list .alliance-columns {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.85rem;
+}
+
+#listings>.listing .members-list .alliance-column {
+    min-width: 0;
+}
+
+#listings>.listing .members-list .alliance-heading {
+    margin: 0 0 0.3rem;
+    padding: 0.28rem 0.55rem;
+    border-radius: 4px;
+    font-size: 0.74em;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+#listings>.listing .members-list .alliance-member-list {
+    margin: 0;
+}
+
+@media (max-width: 80em) {
+    #listings>.listing .members-list .alliance-columns {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@media (max-width: 64em) {
+    #listings>.listing .party {
+        align-items: flex-start;
+    }
+
+    #listings>.listing .party>.party-slots,
+    #listings>.listing .party>.party-slots.party-slots-24 {
+        grid-template-columns: repeat(4, 2em);
+    }
+
+    #listings>.listing .members-list li.member-row {
+        grid-template-columns: 1.35rem auto auto minmax(0, 1fr);
+        row-gap: 0.28rem;
+    }
+
+    #listings>.listing .members-list .member-tags,
+    #listings>.listing .members-list .member-link-slot {
+        grid-column: 2 / -1;
+        justify-self: start;
+    }
+}
+
+@media (max-width: 50em) {
+    #listings>.listing .members-list .alliance-columns {
+        grid-template-columns: 1fr;
+    }
 }
 
 /* =============================================================================
