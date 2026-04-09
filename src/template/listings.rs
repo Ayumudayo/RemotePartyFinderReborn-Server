@@ -47,10 +47,44 @@ pub struct RenderableListing {
     pub leader_parse: ParseDisplay,
 }
 
+#[derive(Debug)]
+pub struct AllianceMemberGroup<'a> {
+    pub label: &'static str,
+    pub members: Vec<&'a RenderableMember>,
+}
+
 impl RenderableListing {
     pub fn is_alliance_view(&self) -> bool {
         self.container.listing.num_parties >= 3
             || self.members.iter().any(|member| member.party_index > 0)
+    }
+
+    pub fn alliance_member_groups(&self) -> Vec<AllianceMemberGroup<'_>> {
+        let mut grouped = [
+            AllianceMemberGroup {
+                label: "Alliance A",
+                members: Vec::new(),
+            },
+            AllianceMemberGroup {
+                label: "Alliance B",
+                members: Vec::new(),
+            },
+            AllianceMemberGroup {
+                label: "Alliance C",
+                members: Vec::new(),
+            },
+        ];
+
+        for member in &self.members {
+            if let Some(group) = grouped.get_mut(usize::from(member.party_index)) {
+                group.members.push(member);
+            }
+        }
+
+        grouped
+            .into_iter()
+            .filter(|group| !group.members.is_empty())
+            .collect()
     }
 }
 
@@ -97,6 +131,14 @@ impl ParseDisplay {
         match self.source {
             crate::parse_resolver::ParseSource::ReportParse => Some("RP"),
             _ => None,
+        }
+    }
+
+    pub fn hidden_rail_tag_label(&self) -> Option<&'static str> {
+        if self.hidden || matches!(self.source, crate::parse_resolver::ParseSource::ReportParse) {
+            Some("HID")
+        } else {
+            None
         }
     }
 }
@@ -211,8 +253,14 @@ impl RenderableMember {
 
 #[cfg(test)]
 mod tests {
-    use super::{encode_fflogs_path_segment, ParseDisplay, RenderableMember};
+    use super::{encode_fflogs_path_segment, ParseDisplay, RenderableListing, RenderableMember};
+    use crate::listing::{
+        ConditionFlags, DutyCategory, DutyFinderSettingsFlags, DutyType, JobFlags, LootRuleFlags,
+        ObjectiveFlags, PartyFinderListing, PartyFinderSlot, SearchAreaFlags,
+    };
+    use crate::listing_container::QueriedListing;
     use chrono::Utc;
+    use sestring::SeString;
 
     fn sample_member(name: &str, home_world: u16) -> RenderableMember {
         RenderableMember {
@@ -231,6 +279,53 @@ mod tests {
             slot_index: 0,
             party_index: 0,
             party_header: None,
+        }
+    }
+
+    fn sample_listing(num_parties: u8, slots_available: u8) -> PartyFinderListing {
+        PartyFinderListing {
+            id: 123,
+            content_id_lower: 456,
+            name: SeString::parse(b"Test Name").unwrap(),
+            description: SeString::parse(b"Test Description").unwrap(),
+            created_world: 73,
+            home_world: 73,
+            current_world: 73,
+            category: DutyCategory::HighEndDuty,
+            duty: 1077,
+            duty_type: DutyType::Normal,
+            beginners_welcome: false,
+            seconds_remaining: 3300,
+            min_item_level: 0,
+            num_parties,
+            slots_available,
+            last_server_restart: 0,
+            objective: ObjectiveFlags::PRACTICE | ObjectiveFlags::DUTY_COMPLETION,
+            conditions: ConditionFlags::DUTY_COMPLETE,
+            duty_finder_settings: DutyFinderSettingsFlags::NONE,
+            loot_rules: LootRuleFlags::NONE,
+            search_area: SearchAreaFlags::DATA_CENTRE,
+            slots: vec![PartyFinderSlot {
+                accepting: JobFlags::DANCER | JobFlags::BLUE_MAGE,
+            }],
+            jobs_present: vec![5, 0, 0, 0, 0, 0, 0, 0],
+            member_content_ids: vec![],
+            member_jobs: vec![],
+            leader_content_id: 0,
+        }
+    }
+
+    fn sample_renderable_listing(members: Vec<RenderableMember>) -> RenderableListing {
+        RenderableListing {
+            container: QueriedListing {
+                created_at: Utc::now(),
+                updated_at: Utc::now(),
+                updated_minute: Utc::now(),
+                time_left: 1800.0,
+                listing: sample_listing(3, 24),
+            },
+            members,
+            leader_parse: ParseDisplay::default(),
         }
     }
 
@@ -312,6 +407,70 @@ mod tests {
 
         assert_eq!(plugin.report_parse_badge(), None);
         assert_eq!(fallback.report_parse_badge(), Some("RP"));
+    }
+
+    #[test]
+    fn parse_display_exposes_hidden_rail_tag_for_hidden_and_report_parse() {
+        let hidden_plugin = ParseDisplay::new(
+            Some(95),
+            "parse-orange".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
+            true,
+            false,
+            crate::parse_resolver::ParseSource::Plugin,
+        );
+        let report_parse_fallback = ParseDisplay::new(
+            Some(88),
+            "parse-purple".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
+            false,
+            false,
+            crate::parse_resolver::ParseSource::ReportParse,
+        );
+        let visible_plugin = ParseDisplay::new(
+            Some(67),
+            "parse-blue".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
+            false,
+            false,
+            crate::parse_resolver::ParseSource::Plugin,
+        );
+
+        assert_eq!(hidden_plugin.hidden_rail_tag_label(), Some("HID"));
+        assert_eq!(report_parse_fallback.hidden_rail_tag_label(), Some("HID"));
+        assert_eq!(visible_plugin.hidden_rail_tag_label(), None);
+    }
+
+    #[test]
+    fn renderable_listing_groups_members_by_alliance_party() {
+        let mut alliance_a = sample_member("Alliance A", 73);
+        alliance_a.party_index = 0;
+        alliance_a.slot_index = 0;
+
+        let mut alliance_b = sample_member("Alliance B", 73);
+        alliance_b.party_index = 1;
+        alliance_b.slot_index = 8;
+
+        let mut alliance_c = sample_member("Alliance C", 73);
+        alliance_c.party_index = 2;
+        alliance_c.slot_index = 16;
+
+        let listing = sample_renderable_listing(vec![alliance_c, alliance_a, alliance_b]);
+        let groups = listing.alliance_member_groups();
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(groups[0].label, "Alliance A");
+        assert_eq!(groups[0].members[0].player.name, "Alliance A");
+        assert_eq!(groups[1].label, "Alliance B");
+        assert_eq!(groups[1].members[0].player.name, "Alliance B");
+        assert_eq!(groups[2].label, "Alliance C");
+        assert_eq!(groups[2].members[0].player.name, "Alliance C");
     }
 }
 
