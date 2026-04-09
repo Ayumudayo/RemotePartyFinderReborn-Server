@@ -201,6 +201,11 @@ body > div.container {
     padding: 1em;
 }
 
+#listings>.listing.listing-alliance-wide>.members-list.alliance {
+    grid-column: 1 / -1;
+    margin-top: -0.2rem;
+}
+
 #listings>.listing:nth-child(2n) {
     background-color: rgba(255, 255, 255, 0.025);
     /* 리스팅 구분감 복구 (은은한 밝음) */
@@ -395,9 +400,9 @@ body > div.container {
     padding: 0.26em 0.2em;
     border-radius: 4px;
     display: grid;
-    grid-template-columns: 1.35rem auto auto minmax(0, 1fr) auto auto;
+    grid-template-columns: 1.35rem auto minmax(0, 1fr) auto auto;
     align-items: center;
-    column-gap: 0.42rem;
+    column-gap: 0.32rem;
     transition: background-color 0.12s ease;
 }
 
@@ -428,16 +433,22 @@ body > div.container {
 }
 
 #listings>.listing .members-list .member-job {
+    grid-column: 1;
     justify-content: center;
-    width: 1.35rem;
+    width: 1.55rem;
 }
 
 #listings>.listing .members-list .member-parse {
+    grid-column: 2;
+    display: inline-flex;
+    justify-content: flex-start;
+    gap: 0.22rem;
     min-width: 0;
 }
 
 /* 아이콘/parse/prog는 고정, 텍스트는 한 줄 + 말줄임 */
 #listings>.listing .members-list .member-info {
+    grid-column: 3;
     min-width: 0;
     white-space: nowrap;
     overflow: hidden;
@@ -446,7 +457,8 @@ body > div.container {
 
 /* 외부 FFLogs 프로필 링크(이름/월드가 확실할 때만 표시) */
 #listings>.listing .members-list .member-link-slot {
-    width: 2.9em;
+    grid-column: 5;
+    min-width: 0;
     justify-content: flex-end;
 }
 
@@ -454,10 +466,10 @@ body > div.container {
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    min-width: 2.75em;
+    min-width: 2.3em;
     height: 1.55em;
-    padding: 0 0.35em;
-    gap: 0.15em;
+    padding: 0 0.28em;
+    gap: 0.1em;
     border-radius: 3px;
     border: 1px solid rgba(255, 255, 255, 0.2);
     background-color: rgba(255, 255, 255, 0.06);
@@ -495,11 +507,16 @@ body > div.container {
 }
 
 #listings>.listing .members-list .member-tags {
+    grid-column: 4;
     display: inline-flex;
     align-items: center;
     justify-content: flex-end;
     gap: 0.32rem;
     min-height: 1.55em;
+}
+
+#listings>.listing .members-list .member-parse .parse-dual {
+    margin-right: 0;
 }
 
 #listings>.listing .members-list .tag,
@@ -544,12 +561,24 @@ body > div.container {
 }
 
 #listings>.listing .members-list .job-icon {
-    width: 1.2em;
-    height: 1.2em;
+    width: 1.38em;
+    height: 1.38em;
     flex-shrink: 0;
     display: block;
     fill: currentColor;
-    filter: drop-shadow(0 1px 1px rgba(0, 0, 0, 0.45));
+    filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.72)) brightness(1.15);
+}
+
+#listings>.listing .members-list .job-icon.tank {
+    color: var(--tank-blue, #3a7fc4);
+}
+
+#listings>.listing .members-list .job-icon.healer {
+    color: var(--healer-green, #3dc483);
+}
+
+#listings>.listing .members-list .job-icon.dps {
+    color: var(--dps-red, #c44848);
 }
 
 #listings>.listing .members-list .job-unknown {
@@ -570,18 +599,6 @@ body > div.container {
 
 #listings>.listing .members-list li.unknown-job .member-info {
     color: var(--meta-text);
-}
-
-#listings>.listing .members-list .job-icon.tank {
-    color: var(--tank-blue, #3a7fc4);
-}
-
-#listings>.listing .members-list .job-icon.healer {
-    color: var(--healer-green, #3dc483);
-}
-
-#listings>.listing .members-list .job-icon.dps {
-    color: var(--dps-red, #c44848);
 }
 
 #listings>.listing .members-list .world {
@@ -621,7 +638,7 @@ body > div.container {
 #listings>.listing .creator .prog {
     font-weight: 700;
     font-size: 0.78em;
-    width: 2.8em;
+    width: 2.55em;
     height: 1.55em;
     padding: 0;
     border-radius: 3px;
@@ -730,15 +747,6 @@ body > div.container {
     border: 1px solid #666666;
 }
 
-/* Hidden + dual parse 정렬용 스페이서 */
-.parse-hidden-spacer {
-    color: transparent;
-    border: 1px solid transparent;
-    background-color: transparent;
-    user-select: none;
-    pointer-events: none;
-}
-
 /* FFLogs 매칭이 추정(동명이인 후보 탐색)인 경우 표시 */
 #listings>.listing .members-list .est,
 #listings>.listing .creator .est {
@@ -814,7 +822,7 @@ body > div.container {
 #listings>.listing .members-list .alliance-columns {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 0.85rem;
+    gap: 0.65rem;
 }
 
 #listings>.listing .members-list .alliance-column {
@@ -836,6 +844,54 @@ body > div.container {
 
 #listings>.listing .members-list .alliance-member-list {
     margin: 0;
+}
+
+#listings>.listing .members-list.alliance li.member-row {
+    grid-template-columns: 1.15rem auto minmax(0, 1fr) auto;
+    grid-template-areas:
+        "job parse info info"
+        ". tags tags link";
+    align-items: start;
+    row-gap: 0.16rem;
+}
+
+#listings>.listing .members-list.alliance li.member-row .member-job {
+    grid-area: job;
+    padding-top: 0.08rem;
+}
+
+#listings>.listing .members-list.alliance li.member-row .member-parse {
+    grid-area: parse;
+    padding-top: 0.02rem;
+}
+
+#listings>.listing .members-list.alliance li.member-row .member-info {
+    grid-area: info;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.02rem;
+    white-space: normal;
+    overflow: visible;
+    text-overflow: clip;
+    line-height: 1.12;
+    overflow-wrap: anywhere;
+}
+
+#listings>.listing .members-list.alliance li.member-row .member-info small {
+    display: block;
+    white-space: normal;
+    font-size: 0.82em;
+}
+
+#listings>.listing .members-list.alliance li.member-row .member-tags {
+    grid-area: tags;
+    justify-content: flex-start;
+}
+
+#listings>.listing .members-list.alliance li.member-row .member-link-slot {
+    grid-area: link;
+    align-self: center;
 }
 
 @media (max-width: 80em) {

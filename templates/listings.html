@@ -169,7 +169,7 @@ remote party finder reborn - listings
     <div id="listings" class="list">
         {%- for renderable in containers %}
         {%- let listing = renderable.container.listing.borrow() %}
-        <div class="listing" data-id="{{ listing.id }}"
+        <div class="listing{% if renderable.is_alliance_view() %} listing-alliance-wide{% endif %}" data-id="{{ listing.id }}"
             data-centre="{{ listing.data_centre_name().unwrap_or_default() }}"
             data-pf-category="{{ listing.html_pf_category() }}" data-joinable-roles="{{ listing.joinable_roles() }}"
             data-num-parties="{{ listing.num_parties }}" data-high-end="{{ listing.high_end() }}"
@@ -229,111 +229,12 @@ remote party finder reborn - listings
                     </div>
                     <div class="total">{{ listing.slots_filled() }}/{{ listing.slots_available }}</div>
                 </div>
-                <div class="members-list{% if renderable.is_alliance_view() %} alliance{% endif %}">
+                {%- if !renderable.is_alliance_view() %}
+                <div class="members-list">
                     <div class="members-header">Members ({{ renderable.members.len() }})</div>
                     {%- if renderable.members.is_empty() %}
                     <p class="no-members"><em data-i18n="no_members">No information available for other members</em>
                     </p>
-                    {%- else %}
-                    {%- if renderable.is_alliance_view() %}
-                    <div class="alliance-columns">
-                        {%- for group in renderable.alliance_member_groups() %}
-                        <div class="alliance-column">
-                            <div class="alliance-heading">{{ group.label }}</div>
-                            <ul class="alliance-member-list">
-                                {%- for member in group.members %}
-                                <li class="member-row{% if member.job_id == 0 %} unknown-job{% endif %}" data-party-index="{{ member.party_index }}" data-slot-index="{{ member.slot_index }}">
-                                    <span class="member-job">
-                                        {%- if let Some(code) = member.job_code() %}
-                                        <svg class="job-icon {{ member.role_class() }}" viewBox="0 0 32 32" aria-hidden="true">
-                                            <use href="/assets/icons.svg#{{ code }}"></use>
-                                        </svg>
-                                        {%- else %}
-                                        <span class="job-unknown" title="Unknown job">?</span>
-                                        {%- endif %}
-                                    </span>
-
-                                    <span class="member-parse">
-                                        {%- if member.parse.hidden %}
-                                        {%- if member.parse.has_secondary %}
-                                        <div class="parse-dual parse-dual-hidden" title="FFLogs: Hidden">
-                                            <span class="parse parse-hidden">HID</span>
-                                            <span class="parse parse-hidden-spacer" aria-hidden="true">--</span>
-                                        </div>
-                                        {%- else %}
-                                        <span class="parse parse-hidden" title="FFLogs: Hidden">HID</span>
-                                        {%- endif %}
-                                        {%- else %}
-                                        {%- if member.parse.has_secondary %}
-                                        <div class="parse-dual">
-                                            {%- match member.parse.primary_percentile %}
-                                            {%- when Some with (p1) %}
-                                            <span class="parse {{ member.parse.primary_color_class }}" title="P1 Best: {{ p1 }}">{{ p1 }}</span>
-                                            {%- when None %}
-                                            <span class="parse parse-none" title="P1: No data">--</span>
-                                            {%- endmatch %}
-
-                                            {%- match member.parse.secondary_percentile %}
-                                            {%- when Some with (p2) %}
-                                            <span class="parse {{ member.parse.secondary_color_class }}" title="P2 Best: {{ p2 }}">{{ p2 }}</span>
-                                            {%- when None %}
-                                            <span class="parse parse-none" title="P2: No data">--</span>
-                                            {%- endmatch %}
-                                        </div>
-                                        {%- else %}
-                                        {%- match member.parse.primary_percentile %}
-                                        {%- when Some with (percentile) %}
-                                        <span class="parse {{ member.parse.primary_color_class }}" title="Best Parse: {{ percentile }}">{{ percentile }}</span>
-                                        {%- when None %}
-                                        <span class="parse parse-none" title="No log data">--</span>
-                                        {%- endmatch %}
-                                        {%- endif %}
-                                        {%- endif %}
-                                    </span>
-
-                                    {%- if member.parse.estimated %}
-                                    <span class="est" title="Estimated match (may be wrong)">?</span>
-                                    {%- endif %}
-
-                                    <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
-
-                                    <span class="member-tags">
-                                        {%- match member.parse.hidden_rail_tag_label() %}
-                                        {%- when Some with (badge) %}
-                                        {%- if member.parse.hidden %}
-                                        <span class="tag tag-hidden" title="FFLogs: Hidden">{{ badge }}</span>
-                                        {%- else %}
-                                        <span class="tag tag-hidden" title="Source: report-parse fallback">{{ badge }}</span>
-                                        {%- endif %}
-                                        {%- when None %}
-                                        {%- endmatch %}
-
-                                        {%- if let Some(clears) = member.progress.final_clear_count %}
-                                        <span class="tag tag-clear" title="Clears: {{ clears }}">✅{{ clears }}</span>
-                                        {%- else %}
-                                        {%- match member.progress.final_boss_percentage %}
-                                        {%- when Some with (hp) %}
-                                        <span class="tag tag-boss" title="Final Boss HP: {{ hp }}%">{{ hp }}%</span>
-                                        {%- when None %}
-                                        {%- endmatch %}
-                                        {%- endif %}
-                                    </span>
-
-                                    <span class="member-link-slot">
-                                        {%- match member.fflogs_character_url() %}
-                                        {%- when Some with (fflogs_url) %}
-                                        <a class="fflogs-link" href="{{ fflogs_url }}" target="_blank" rel="noopener noreferrer"
-                                            aria-label="Open FFLogs profile for {{ member.player.name }}"
-                                            title="Open FFLogs character profile">FF</a>
-                                        {%- when None %}
-                                        {%- endmatch %}
-                                    </span>
-                                </li>
-                                {%- endfor %}
-                            </ul>
-                        </div>
-                        {%- endfor %}
-                    </div>
                     {%- else %}
                     <ul>
                         {%- for member in renderable.members %}
@@ -348,13 +249,12 @@ remote party finder reborn - listings
                                 {%- endif %}
                             </span>
 
-                            <span class="member-parse">
+                            <div class="member-parse">
                                 {%- if member.parse.hidden %}
-                                {%- if member.parse.has_secondary %}
-                                <div class="parse-dual parse-dual-hidden" title="FFLogs: Hidden">
-                                    <span class="parse parse-hidden">HID</span>
-                                    <span class="parse parse-hidden-spacer" aria-hidden="true">--</span>
-                                </div>
+                                        {%- if member.parse.has_secondary %}
+                                        <div class="parse-dual parse-dual-hidden" title="FFLogs: Hidden">
+                                            <span class="parse parse-hidden">HID</span>
+                                        </div>
                                 {%- else %}
                                 <span class="parse parse-hidden" title="FFLogs: Hidden">HID</span>
                                 {%- endif %}
@@ -384,11 +284,11 @@ remote party finder reborn - listings
                                 {%- endmatch %}
                                 {%- endif %}
                                 {%- endif %}
-                            </span>
 
-                            {%- if member.parse.estimated %}
-                            <span class="est" title="Estimated match (may be wrong)">?</span>
-                            {%- endif %}
+                                {%- if member.parse.estimated %}
+                                <span class="est" title="Estimated match (may be wrong)">?</span>
+                                {%- endif %}
+                            </div>
 
                             <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
 
@@ -423,12 +323,12 @@ remote party finder reborn - listings
                                 {%- when None %}
                                 {%- endmatch %}
                             </span>
-                         </li>
-                         {%- endfor %}
+                             </li>
+                             {%- endfor %}
                       </ul>
-                      {%- endif %}
                     {%- endif %}
                 </div>
+                {%- endif %}
             </div>
             <div class="middle">
                 <div class="stat">
@@ -517,6 +417,113 @@ remote party finder reborn - listings
                     </span>
                 </div>
             </div>
+            {%- if renderable.is_alliance_view() %}
+            <div class="members-list alliance">
+                <div class="members-header">Members ({{ renderable.members.len() }})</div>
+                {%- if renderable.members.is_empty() %}
+                <p class="no-members"><em data-i18n="no_members">No information available for other members</em>
+                </p>
+                {%- else %}
+                <div class="alliance-columns">
+                    {%- for group in renderable.alliance_member_groups() %}
+                    <div class="alliance-column">
+                        <div class="alliance-heading">{{ group.label }}</div>
+                        <ul class="alliance-member-list">
+                            {%- for member in group.members %}
+                            <li class="member-row{% if member.job_id == 0 %} unknown-job{% endif %}" data-party-index="{{ member.party_index }}" data-slot-index="{{ member.slot_index }}">
+                                <span class="member-job">
+                                    {%- if let Some(code) = member.job_code() %}
+                                    <svg class="job-icon {{ member.role_class() }}" viewBox="0 0 32 32" aria-hidden="true">
+                                        <use href="/assets/icons.svg#{{ code }}"></use>
+                                    </svg>
+                                    {%- else %}
+                                    <span class="job-unknown" title="Unknown job">?</span>
+                                    {%- endif %}
+                                </span>
+
+                                <div class="member-parse">
+                                    {%- if member.parse.hidden %}
+                                    {%- if member.parse.has_secondary %}
+                                    <div class="parse-dual parse-dual-hidden" title="FFLogs: Hidden">
+                                        <span class="parse parse-hidden">HID</span>
+                                    </div>
+                                    {%- else %}
+                                    <span class="parse parse-hidden" title="FFLogs: Hidden">HID</span>
+                                    {%- endif %}
+                                    {%- else %}
+                                    {%- if member.parse.has_secondary %}
+                                    <div class="parse-dual">
+                                        {%- match member.parse.primary_percentile %}
+                                        {%- when Some with (p1) %}
+                                        <span class="parse {{ member.parse.primary_color_class }}" title="P1 Best: {{ p1 }}">{{ p1 }}</span>
+                                        {%- when None %}
+                                        <span class="parse parse-none" title="P1: No data">--</span>
+                                        {%- endmatch %}
+
+                                        {%- match member.parse.secondary_percentile %}
+                                        {%- when Some with (p2) %}
+                                        <span class="parse {{ member.parse.secondary_color_class }}" title="P2 Best: {{ p2 }}">{{ p2 }}</span>
+                                        {%- when None %}
+                                        <span class="parse parse-none" title="P2: No data">--</span>
+                                        {%- endmatch %}
+                                    </div>
+                                    {%- else %}
+                                    {%- match member.parse.primary_percentile %}
+                                    {%- when Some with (percentile) %}
+                                    <span class="parse {{ member.parse.primary_color_class }}" title="Best Parse: {{ percentile }}">{{ percentile }}</span>
+                                    {%- when None %}
+                                    <span class="parse parse-none" title="No log data">--</span>
+                                    {%- endmatch %}
+                                    {%- endif %}
+                                    {%- endif %}
+
+                                    {%- if member.parse.estimated %}
+                                    <span class="est" title="Estimated match (may be wrong)">?</span>
+                                    {%- endif %}
+                                </div>
+
+                                <span class="member-info">{{ member.player.name }} <small>@ {{ member.player.home_world_name() }}</small></span>
+
+                                <span class="member-tags">
+                                    {%- match member.parse.hidden_rail_tag_label() %}
+                                    {%- when Some with (badge) %}
+                                    {%- if member.parse.hidden %}
+                                    <span class="tag tag-hidden" title="FFLogs: Hidden">{{ badge }}</span>
+                                    {%- else %}
+                                    <span class="tag tag-hidden" title="Source: report-parse fallback">{{ badge }}</span>
+                                    {%- endif %}
+                                    {%- when None %}
+                                    {%- endmatch %}
+
+                                    {%- if let Some(clears) = member.progress.final_clear_count %}
+                                    <span class="tag tag-clear" title="Clears: {{ clears }}">✅{{ clears }}</span>
+                                    {%- else %}
+                                    {%- match member.progress.final_boss_percentage %}
+                                    {%- when Some with (hp) %}
+                                    <span class="tag tag-boss" title="Final Boss HP: {{ hp }}%">{{ hp }}%</span>
+                                    {%- when None %}
+                                    {%- endmatch %}
+                                    {%- endif %}
+                                </span>
+
+                                <span class="member-link-slot">
+                                    {%- match member.fflogs_character_url() %}
+                                    {%- when Some with (fflogs_url) %}
+                                    <a class="fflogs-link" href="{{ fflogs_url }}" target="_blank" rel="noopener noreferrer"
+                                        aria-label="Open FFLogs profile for {{ member.player.name }}"
+                                        title="Open FFLogs character profile">FF</a>
+                                    {%- when None %}
+                                    {%- endmatch %}
+                                </span>
+                            </li>
+                            {%- endfor %}
+                        </ul>
+                    </div>
+                    {%- endfor %}
+                </div>
+                {%- endif %}
+            </div>
+            {%- endif %}
         </div>
         {%- endfor %}
     </div>

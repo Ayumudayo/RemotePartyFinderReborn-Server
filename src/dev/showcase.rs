@@ -290,7 +290,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 2_001,
                 0,
                 0,
-                19,
+                24,
                 "Fallback Hero",
                 73,
                 fallback_parse.clone(),
@@ -300,7 +300,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 2_002,
                 1,
                 0,
-                19,
+                28,
                 "Steady Scholar",
                 73,
                 single_parse.clone(),
@@ -329,7 +329,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 3_001,
                 0,
                 0,
-                19,
+                22,
                 "Guessed Dragoon",
                 73,
                 estimated_parse.clone(),
@@ -339,7 +339,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 3_002,
                 1,
                 0,
-                19,
+                20,
                 "Unparsed Monk",
                 73,
                 no_parse.clone(),
@@ -361,7 +361,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 4_001,
                 0,
                 0,
-                19,
+                21,
                 "Alliance Vanguard",
                 73,
                 dual_parse.clone(),
@@ -371,7 +371,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 4_002,
                 8,
                 1,
-                19,
+                33,
                 "Alliance Support",
                 73,
                 single_parse.clone(),
@@ -381,7 +381,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 4_003,
                 16,
                 2,
-                19,
+                38,
                 "Alliance Reserve",
                 73,
                 no_parse.clone(),
@@ -483,9 +483,21 @@ mod tests {
         let alliance_row = member_row_fragment(&html, "Alliance Vanguard");
         assert!(alliance_row.contains(r#"class="member-job""#));
         assert!(alliance_row.contains(r#"class="member-parse""#));
+        assert!(alliance_row.contains(r#"class="parse-dual""#));
         assert!(alliance_row.contains(r#"class="member-info""#));
         assert!(alliance_row.contains(r#"class="member-tags""#));
         assert!(alliance_row.contains(r#"class="member-link-slot""#));
+    }
+
+    #[test]
+    fn hidden_dual_rows_keep_parse_dual_inside_member_parse_container() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        let hidden_dual_row = member_row_fragment(&html, "Silent Paladin");
+        assert!(hidden_dual_row.contains(r#"class="member-parse""#));
+        assert!(hidden_dual_row.contains(r#"class="parse-dual parse-dual-hidden""#));
+        assert!(!hidden_dual_row.contains("parse-hidden-spacer"));
+        assert!(!hidden_dual_row.contains(r#"<span class="member-parse">"#));
     }
 
     #[test]
@@ -493,8 +505,8 @@ mod tests {
         let html = render_showcase_html().expect("showcase should render");
 
         let hidden_row = member_row_fragment(&html, "Mystery Raider");
-        assert!(hidden_row.contains(r#"class="member-tags""#));
-        assert!(hidden_row.contains(r#"class="tag tag-hidden" title="FFLogs: Hidden">HID"#));
+        assert!(hidden_row.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
+        assert!(!hidden_row.contains(r#"class="tag tag-hidden" title="FFLogs: Hidden">HID"#));
 
         let estimated_row = member_row_fragment(&html, "Guessed Dragoon");
         assert!(estimated_row.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
@@ -513,7 +525,8 @@ mod tests {
         let html = render_showcase_html().expect("showcase should render");
 
         let hidden_creator = creator_row_fragment(&html, "Section 1: HID and unknown job");
-        assert!(hidden_creator.contains(r#"class="tag tag-hidden" title="FFLogs: Hidden">HID"#));
+        assert!(hidden_creator.contains(r#"class="parse parse-hidden" title="FFLogs: Hidden">HID"#));
+        assert!(!hidden_creator.contains(r#"class="tag tag-hidden" title="FFLogs: Hidden">HID"#));
 
         let fallback_creator = creator_row_fragment(&html, "Section 2: HID fallback and clears");
         assert!(fallback_creator.contains(
@@ -529,6 +542,7 @@ mod tests {
     fn showcase_contains_alliance_and_empty_member_examples() {
         let html = render_showcase_html().expect("showcase should render");
 
+        assert!(html.contains(r#"class="listing listing-alliance-wide""#));
         assert!(html.contains(r#"class="party party-alliance""#));
         assert!(html.contains(r#"class="party-slots party-slots-24""#));
         assert!(html.contains(r#"class="alliance-columns""#));

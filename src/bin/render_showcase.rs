@@ -105,6 +105,7 @@ mod tests {
             fs::read_to_string(&output).expect("showcase html should exist after bundling");
         assert!(written_html.contains(r#"href="./assets/pico.css""#));
         assert!(written_html.contains(r#"src="./assets/list.js""#));
+        assert!(written_html.contains(r#"./assets/icons.svg#PLD"#));
 
         let assets_dir = output
             .parent()

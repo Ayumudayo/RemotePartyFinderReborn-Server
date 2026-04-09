@@ -135,10 +135,10 @@ impl ParseDisplay {
     }
 
     /// UI policy helper:
-    /// report-parse fallback is rendered with the same right-rail HID tag
-    /// as hidden FFLogs rows, per the approved listings layout refresh spec.
+    /// only report-parse fallback rows render the right-rail HID tag.
+    /// plain hidden FFLogs rows keep the left-side HID parse state only.
     pub fn hidden_rail_tag_label(&self) -> Option<&'static str> {
-        if self.hidden || matches!(self.source, crate::parse_resolver::ParseSource::ReportParse) {
+        if matches!(self.source, crate::parse_resolver::ParseSource::ReportParse) {
             Some("HID")
         } else {
             None
@@ -445,7 +445,7 @@ mod tests {
             crate::parse_resolver::ParseSource::Plugin,
         );
 
-        assert_eq!(hidden_plugin.hidden_rail_tag_label(), Some("HID"));
+        assert_eq!(hidden_plugin.hidden_rail_tag_label(), None);
         assert_eq!(report_parse_fallback.hidden_rail_tag_label(), Some("HID"));
         assert_eq!(visible_plugin.hidden_rail_tag_label(), None);
     }
