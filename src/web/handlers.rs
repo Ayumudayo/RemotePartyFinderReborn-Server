@@ -182,6 +182,7 @@ fn lookup_fflogs_displays(
             resolved.secondary_color_class,
             resolved.has_secondary,
             resolved.hidden,
+            resolved.originally_hidden,
             resolved.estimated,
             resolved.source,
         ),
@@ -396,6 +397,7 @@ pub async fn listings_handler(
                                      false,
                                      false,
                                      false,
+                                     false,
                                      crate::parse_resolver::ParseSource::None,
                                  ),
                                  crate::template::listings::ProgressDisplay::new(
@@ -460,6 +462,7 @@ pub async fn listings_handler(
                              "parse-none".to_string(),
                              None,
                              "parse-none".to_string(),
+                             false,
                              false,
                              false,
                              false,

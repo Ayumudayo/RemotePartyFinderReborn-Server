@@ -59,6 +59,7 @@ fn build_parse_display(
     secondary_percentile: Option<u8>,
     has_secondary: bool,
     hidden: bool,
+    originally_hidden: bool,
     estimated: bool,
     source: ParseSource,
 ) -> ParseDisplay {
@@ -69,6 +70,7 @@ fn build_parse_display(
         parse_color_class(secondary_percentile),
         has_secondary,
         hidden,
+        originally_hidden,
         estimated,
         source,
     )
@@ -227,24 +229,62 @@ fn build_listing(
 }
 
 fn build_showcase_listings() -> Vec<RenderableListing> {
-    let hidden_single = build_parse_display(None, None, false, true, false, ParseSource::Plugin);
-    let hidden_dual =
-        build_parse_display(Some(97), Some(88), true, true, false, ParseSource::Plugin);
+    let hidden_single =
+        build_parse_display(None, None, false, true, false, false, ParseSource::Plugin);
+    let hidden_dual = build_parse_display(
+        Some(97),
+        Some(88),
+        true,
+        true,
+        false,
+        false,
+        ParseSource::Plugin,
+    );
     let fallback_parse = build_parse_display(
         Some(91),
         None,
         false,
         false,
+        true,
         false,
         ParseSource::ReportParse,
     );
-    let estimated_parse =
-        build_parse_display(Some(52), None, false, false, true, ParseSource::Plugin);
-    let single_parse =
-        build_parse_display(Some(67), None, false, false, false, ParseSource::Plugin);
-    let dual_parse =
-        build_parse_display(Some(45), Some(82), true, false, false, ParseSource::Plugin);
-    let no_parse = build_parse_display(None, None, false, false, false, ParseSource::None);
+    let estimated_parse = build_parse_display(
+        Some(52),
+        None,
+        false,
+        false,
+        false,
+        true,
+        ParseSource::Plugin,
+    );
+    let single_parse = build_parse_display(
+        Some(67),
+        None,
+        false,
+        false,
+        false,
+        false,
+        ParseSource::Plugin,
+    );
+    let dual_parse = build_parse_display(
+        Some(45),
+        Some(82),
+        true,
+        false,
+        false,
+        false,
+        ParseSource::Plugin,
+    );
+    let no_parse = build_parse_display(
+        None,
+        None,
+        false,
+        false,
+        false,
+        false,
+        ParseSource::None,
+    );
 
     let hidden_listing = build_listing(
         9_001,
@@ -312,6 +352,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
             None,
             false,
             false,
+            true,
             false,
             ParseSource::ReportParse,
         ),
@@ -346,7 +387,15 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 build_progress_display(&no_parse, Some(17), None, None, None),
             ),
         ],
-        build_parse_display(Some(94), None, false, false, true, ParseSource::Plugin),
+        build_parse_display(
+            Some(94),
+            None,
+            false,
+            false,
+            false,
+            true,
+            ParseSource::Plugin,
+        ),
     );
 
     let alliance_listing = build_listing(
@@ -458,7 +507,15 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
                 build_progress_display(&hidden_dual, None, None, None, None),
             ),
         ],
-        build_parse_display(Some(70), Some(83), true, false, false, ParseSource::Plugin),
+        build_parse_display(
+            Some(70),
+            Some(83),
+            true,
+            false,
+            false,
+            false,
+            ParseSource::Plugin,
+        ),
     );
 
     let empty_members_listing = build_listing(
