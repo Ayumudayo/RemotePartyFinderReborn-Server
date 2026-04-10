@@ -93,6 +93,22 @@ fn default_ingest_nonce_ttl_seconds() -> i64 {
     300
 }
 
+fn default_ingest_require_capabilities_for_protected_endpoints() -> bool {
+    false
+}
+
+fn default_ingest_capability_secret() -> String {
+    String::new()
+}
+
+fn default_ingest_capability_session_ttl_seconds() -> i64 {
+    60 * 60 * 12
+}
+
+fn default_ingest_capability_detail_ttl_seconds() -> i64 {
+    60 * 15
+}
+
 fn default_monitor_snapshot_interval_seconds() -> u64 {
     0
 }
@@ -152,6 +168,14 @@ pub struct Web {
     pub ingest_clock_skew_seconds: i64,
     #[serde(default = "default_ingest_nonce_ttl_seconds")]
     pub ingest_nonce_ttl_seconds: i64,
+    #[serde(default = "default_ingest_require_capabilities_for_protected_endpoints")]
+    pub ingest_require_capabilities_for_protected_endpoints: bool,
+    #[serde(default = "default_ingest_capability_secret")]
+    pub ingest_capability_secret: String,
+    #[serde(default = "default_ingest_capability_session_ttl_seconds")]
+    pub ingest_capability_session_ttl_seconds: i64,
+    #[serde(default = "default_ingest_capability_detail_ttl_seconds")]
+    pub ingest_capability_detail_ttl_seconds: i64,
     #[serde(default = "default_monitor_snapshot_interval_seconds")]
     pub monitor_snapshot_interval_seconds: u64,
 }

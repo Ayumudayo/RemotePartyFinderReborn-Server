@@ -12,6 +12,7 @@ use mongodb::{
     options::IndexOptions,
     Client as MongoClient, Collection, IndexModel,
 };
+use uuid::Uuid;
 use tokio::sync::broadcast::Sender;
 use tokio::sync::RwLock;
 
@@ -103,6 +104,10 @@ pub struct IngestSecurityConfig {
     pub shared_secret: String,
     pub clock_skew_seconds: i64,
     pub nonce_ttl_seconds: i64,
+    pub require_capabilities_for_protected_endpoints: bool,
+    pub capability_secret: String,
+    pub capability_session_ttl_seconds: i64,
+    pub capability_detail_ttl_seconds: i64,
     pub rate_limits: IngestRateLimits,
 }
 
@@ -157,6 +162,28 @@ impl State {
                 shared_secret: config.web.ingest_shared_secret.clone(),
                 clock_skew_seconds: config.web.ingest_clock_skew_seconds.max(1),
                 nonce_ttl_seconds: config.web.ingest_nonce_ttl_seconds.max(1),
+                require_capabilities_for_protected_endpoints: config
+                    .web
+                    .ingest_require_capabilities_for_protected_endpoints,
+                capability_secret: if config.web.ingest_capability_secret.trim().is_empty() {
+                    let generated = format!("runtime-capability-{}", Uuid::new_v4());
+                    if config.web.ingest_require_capabilities_for_protected_endpoints {
+                        tracing::warn!(
+                            "web.ingest_capability_secret is empty; generated an ephemeral runtime secret for protected endpoint capabilities"
+                        );
+                    }
+                    generated
+                } else {
+                    config.web.ingest_capability_secret.trim().to_string()
+                },
+                capability_session_ttl_seconds: config
+                    .web
+                    .ingest_capability_session_ttl_seconds
+                    .max(60),
+                capability_detail_ttl_seconds: config
+                    .web
+                    .ingest_capability_detail_ttl_seconds
+                    .max(60),
                 rate_limits: IngestRateLimits {
                     contribute_per_minute: config.web.ingest_rate_limit_contribute_per_minute.max(1),
                     multiple_per_minute: config.web.ingest_rate_limit_multiple_per_minute.max(1),

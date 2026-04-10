@@ -42,5 +42,11 @@ ingest_shared_secret = "CHANGE_ME_TO_A_LONG_RANDOM_SECRET"
 ingest_clock_skew_seconds = 300
 ingest_nonce_ttl_seconds = 300
 
+# Protected endpoint capabilities
+ingest_require_capabilities_for_protected_endpoints = true
+ingest_capability_secret = "CHANGE_ME_TO_A_SECOND_LONG_RANDOM_SECRET"
+ingest_capability_session_ttl_seconds = 43200
+ingest_capability_detail_ttl_seconds = 900
+
 [mongo]
 url = "YOUR_MONGODB_CONNECTION_STRING"
