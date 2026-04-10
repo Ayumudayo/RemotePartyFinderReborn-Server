@@ -87,12 +87,13 @@ fn contribute(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     let route = warp::path("contribute")
         .and(warp::path::end())
         .and(warp::header::headers_cloned())
+        .and(warp::addr::remote())
         .and(warp::body::content_length_limit(
             state.max_body_bytes_contribute,
         ))
         .and(warp::body::json())
-        .and_then(move |headers, listing: PartyFinderListing| {
-            handlers::contribute_handler(Arc::clone(&state), headers, listing)
+        .and_then(move |headers, remote_addr, listing: PartyFinderListing| {
+            handlers::contribute_handler(Arc::clone(&state), headers, remote_addr, listing)
         });
     warp::post().and(route).boxed()
 }
@@ -102,12 +103,13 @@ fn contribute_multiple(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::path("multiple"))
         .and(warp::path::end())
         .and(warp::header::headers_cloned())
+        .and(warp::addr::remote())
         .and(warp::body::content_length_limit(
             state.max_body_bytes_multiple,
         ))
         .and(warp::body::json())
-        .and_then(move |headers, listings: Vec<PartyFinderListing>| {
-            handlers::contribute_multiple_handler(Arc::clone(&state), headers, listings)
+        .and_then(move |headers, remote_addr, listings: Vec<PartyFinderListing>| {
+            handlers::contribute_multiple_handler(Arc::clone(&state), headers, remote_addr, listings)
         });
     warp::post().and(route).boxed()
 }
@@ -117,12 +119,13 @@ fn contribute_players(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::path("players"))
         .and(warp::path::end())
         .and(warp::header::headers_cloned())
+        .and(warp::addr::remote())
         .and(warp::body::content_length_limit(
             state.max_body_bytes_players,
         ))
         .and(warp::body::json())
-        .and_then(move |headers, players: Vec<UploadablePlayer>| {
-            handlers::contribute_players_handler(Arc::clone(&state), headers, players)
+        .and_then(move |headers, remote_addr, players: Vec<UploadablePlayer>| {
+            handlers::contribute_players_handler(Arc::clone(&state), headers, remote_addr, players)
         });
     warp::post().and(route).boxed()
 }
@@ -132,12 +135,13 @@ fn contribute_detail(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::path("detail"))
         .and(warp::path::end())
         .and(warp::header::headers_cloned())
+        .and(warp::addr::remote())
         .and(warp::body::content_length_limit(
             state.max_body_bytes_detail,
         ))
         .and(warp::body::json())
-        .and_then(move |headers, detail: handlers::UploadablePartyDetail| {
-            handlers::contribute_detail_handler(Arc::clone(&state), headers, detail)
+        .and_then(move |headers, remote_addr, detail: handlers::UploadablePartyDetail| {
+            handlers::contribute_detail_handler(Arc::clone(&state), headers, remote_addr, detail)
         });
     warp::post().and(route).boxed()
 }
@@ -148,8 +152,9 @@ fn contribute_fflogs_jobs(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::path("jobs"))
         .and(warp::path::end())
         .and(warp::header::headers_cloned())
-        .and_then(move |headers| {
-            handlers::contribute_fflogs_jobs_handler(Arc::clone(&state), headers)
+        .and(warp::addr::remote())
+        .and_then(move |headers, remote_addr| {
+            handlers::contribute_fflogs_jobs_handler(Arc::clone(&state), headers, remote_addr)
         });
     warp::get().and(route).boxed()
 }
@@ -160,12 +165,13 @@ fn contribute_fflogs_results(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::path("results"))
         .and(warp::path::end())
         .and(warp::header::headers_cloned())
+        .and(warp::addr::remote())
         .and(warp::body::content_length_limit(
             state.max_body_bytes_fflogs_results,
         ))
         .and(warp::body::json())
-        .and_then(move |headers, results: Vec<handlers::ParseResult>| {
-            handlers::contribute_fflogs_results_handler(Arc::clone(&state), headers, results)
+        .and_then(move |headers, remote_addr, results: Vec<handlers::ParseResult>| {
+            handlers::contribute_fflogs_results_handler(Arc::clone(&state), headers, remote_addr, results)
         });
     warp::post().and(route).boxed()
 }
@@ -177,12 +183,13 @@ fn contribute_fflogs_leases_abandon(state: Arc<State>) -> BoxedFilter<(impl Repl
         .and(warp::path("abandon"))
         .and(warp::path::end())
         .and(warp::header::headers_cloned())
+        .and(warp::addr::remote())
         .and(warp::body::content_length_limit(
             state.max_body_bytes_fflogs_results,
         ))
         .and(warp::body::json())
-        .and_then(move |headers, leases: Vec<handlers::AbandonFflogsLease>| {
-            handlers::contribute_fflogs_leases_abandon_handler(Arc::clone(&state), headers, leases)
+        .and_then(move |headers, remote_addr, leases: Vec<handlers::AbandonFflogsLease>| {
+            handlers::contribute_fflogs_leases_abandon_handler(Arc::clone(&state), headers, remote_addr, leases)
         });
     warp::post().and(route).boxed()
 }

@@ -79,6 +79,13 @@ The server is built with:
     ingest_clock_skew_seconds = 300
     ingest_nonce_ttl_seconds = 300
 
+    # Protected endpoint capabilities
+    # Keep false during rollout, then enable after upgraded plugin builds are deployed.
+    ingest_require_capabilities_for_protected_endpoints = false
+    ingest_capability_secret = ""
+    ingest_capability_session_ttl_seconds = 43200
+    ingest_capability_detail_ttl_seconds = 900
+
     [mongo]
     url = "mongodb://localhost:27017/remote-party-finder"
     ```
@@ -88,6 +95,8 @@ Set `ingest_shared_secret` to a strong random value and use the same value in th
 
 Recommended mode for public plugin distribution is `ingest_require_signature = false`.
 Shared-secret signatures are suitable for controlled/private deployments only; they are not strong client authentication for openly distributed binaries.
+Protected endpoint capabilities are designed for a staged rollout: keep
+`ingest_require_capabilities_for_protected_endpoints = false` until updated plugin builds are live, then enable it with a separate `ingest_capability_secret`.
 
 ### Recommended Presets
 
@@ -104,7 +113,9 @@ Tune these four values together based on server capacity and contributor count:
 - `monitor_snapshot_interval_seconds` controls periodic one-line `[MONITOR]` logs for Koyeb console observability (default `0` = off).
 - Increase upsert concurrency only if MongoDB has headroom; otherwise keep defaults.
 - `ingest_require_signature = true` enables HMAC+timestamp+nonce verification for `/contribute*` requests.
-- `ingest_rate_limit_*` limits are per client-id (header `X-RPF-Client-Id`) and return `429` with `Retry-After`.
+- `ingest_require_capabilities_for_protected_endpoints = true` requires server-issued `X-RPF-Capability` tokens for `/contribute/detail` and `/contribute/fflogs/*`.
+- `ingest_capability_session_ttl_seconds` controls the FFLogs worker token lifetime; `ingest_capability_detail_ttl_seconds` controls per-listing detail upload lifetime.
+- `ingest_rate_limit_*` limits are keyed by remote IP when available (fallback: `X-RPF-Client-Id`) and return `429` with `Retry-After`.
 - Restart the server after editing `config.toml`.
 
 ### Legacy `account_id` Migration

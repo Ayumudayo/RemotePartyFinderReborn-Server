@@ -2,6 +2,7 @@ use std::{
     cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet},
     convert::Infallible,
+    net::SocketAddr,
     sync::{
         Arc,
         atomic::Ordering as AtomicOrdering,
@@ -27,7 +28,7 @@ use crate::{
     template::stats::StatsTemplate,
 };
 use super::{State, FFLOGS_LEASE_TTL_MINUTES};
-use super::ingest_guard::{self, IngestEndpoint};
+use super::ingest_guard::{self, CapabilityClaims, CapabilityScope, IngestEndpoint};
 
 fn resolve_member_player(
     players: &HashMap<u64, crate::player::Player>,
@@ -181,6 +182,7 @@ fn lookup_fflogs_displays(
             resolved.secondary_color_class,
             resolved.has_secondary,
             resolved.hidden,
+            resolved.originally_hidden,
             resolved.estimated,
             resolved.source,
         ),
@@ -395,6 +397,7 @@ pub async fn listings_handler(
                                      false,
                                      false,
                                      false,
+                                     false,
                                      crate::parse_resolver::ParseSource::None,
                                  ),
                                  crate::template::listings::ProgressDisplay::new(
@@ -459,6 +462,7 @@ pub async fn listings_handler(
                              "parse-none".to_string(),
                              None,
                              "parse-none".to_string(),
+                             false,
                              false,
                              false,
                              false,
@@ -534,12 +538,14 @@ pub async fn stats_handler(
 pub async fn contribute_handler(
     state: Arc<State>,
     headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
     listing: PartyFinderListing,
 ) -> std::result::Result<warp::reply::Response, Infallible> {
     if let Err(error) = ingest_guard::authorize_request(
         &state,
         IngestEndpoint::Contribute,
         &headers,
+        remote_addr,
         "POST",
         "/contribute",
     )
@@ -598,19 +604,22 @@ fn build_listing_upsert(listing: &PartyFinderListing) -> anyhow::Result<(u32, Do
 pub async fn contribute_multiple_handler(
     state: Arc<State>,
     headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
     listings: Vec<PartyFinderListing>,
 ) -> std::result::Result<warp::reply::Response, Infallible> {
-    if let Err(error) = ingest_guard::authorize_request(
+    let guard_ctx = match ingest_guard::authorize_request(
         &state,
         IngestEndpoint::ContributeMultiple,
         &headers,
+        remote_addr,
         "POST",
         "/contribute/multiple",
     )
     .await
     {
-        return Ok(ingest_guard::guard_error_reply(error));
-    }
+        Ok(ctx) => ctx,
+        Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
+    };
 
     let total = listings.len();
     if total > state.max_multiple_batch_size {
@@ -638,12 +647,14 @@ pub async fn contribute_multiple_handler(
     let upsert_total = upserts.len();
     let mut successful = 0usize;
     let mut failed_writes = 0usize;
+    let mut successful_listing_ids = Vec::with_capacity(upsert_total);
     let mut writes = futures_util::stream::iter(upserts.into_iter().map(|(listing_id, filter, update)| {
         let collection = state.collection();
         async move {
             collection
                 .update_one(filter, update, UpdateOptions::builder().upsert(true).build())
                 .await
+                .map(|_| listing_id)
                 .map_err(|error| (listing_id, error))
         }
     }))
@@ -651,7 +662,10 @@ pub async fn contribute_multiple_handler(
 
     while let Some(write_result) = writes.next().await {
         match write_result {
-            Ok(_) => successful += 1,
+            Ok(listing_id) => {
+                successful += 1;
+                successful_listing_ids.push(listing_id);
+            }
             Err((listing_id, error)) => {
                 failed_writes += 1;
                 tracing::debug!("Failed to insert listing {}: {:#?}", listing_id, error);
@@ -670,25 +684,37 @@ pub async fn contribute_multiple_handler(
     }
 
     let _ = state.listings_channel.send(listings.into());
-    Ok(format!("{}/{} updated", successful, total).into_response())
+    let response = ContributeMultipleResponse {
+        status: if failed_writes == 0 { "ok" } else { "partial" },
+        requested: total,
+        accepted: upsert_total,
+        updated: successful,
+        failed: failed_writes,
+        detail_capabilities: issue_detail_capabilities(&state, &guard_ctx.client_id, &successful_listing_ids),
+        protected_endpoints: issue_protected_endpoint_capabilities(&state, &guard_ctx.client_id),
+    };
+    Ok(warp::reply::json(&response).into_response())
 }
 
 pub async fn contribute_players_handler(
     state: Arc<State>,
     headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
     players: Vec<UploadablePlayer>,
 ) -> std::result::Result<warp::reply::Response, Infallible> {
-    if let Err(error) = ingest_guard::authorize_request(
+    let guard_ctx = match ingest_guard::authorize_request(
         &state,
         IngestEndpoint::ContributePlayers,
         &headers,
+        remote_addr,
         "POST",
         "/contribute/players",
     )
     .await
     {
-        return Ok(ingest_guard::guard_error_reply(error));
-    }
+        Ok(ctx) => ctx,
+        Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
+    };
 
     let total = players.len();
     if total > state.max_players_batch_size {
@@ -710,6 +736,8 @@ pub async fn contribute_players_handler(
         updated: usize,
         invalid: usize,
         failed: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        protected_endpoints: Option<ProtectedEndpointCapabilities>,
     }
 
     match result {
@@ -762,6 +790,7 @@ pub async fn contribute_players_handler(
                 updated: report.updated,
                 invalid: report.invalid,
                 failed: report.failed,
+                protected_endpoints: issue_protected_endpoint_capabilities(&state, &guard_ctx.client_id),
             };
 
             Ok(warp::reply::with_status(warp::reply::json(&response), status_code).into_response())
@@ -776,6 +805,7 @@ pub async fn contribute_players_handler(
                 updated: 0,
                 invalid: 0,
                 failed: total,
+                protected_endpoints: issue_protected_endpoint_capabilities(&state, &guard_ctx.client_id),
             };
 
             Ok(warp::reply::with_status(
@@ -797,6 +827,8 @@ pub struct UploadablePartyDetail {
     pub member_content_ids: Vec<u64>,
     #[serde(default)]
     pub member_jobs: Option<Vec<u8>>,
+    #[serde(default)]
+    pub slot_flags: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -804,6 +836,39 @@ struct ContributeDetailResponse {
     status: &'static str,
     matched_count: u64,
     modified_count: u64,
+}
+
+#[derive(Debug, serde::Serialize, Clone)]
+struct ProtectedEndpointCapability {
+    token: String,
+    expires_at: i64,
+}
+
+#[derive(Debug, serde::Serialize, Clone)]
+struct ProtectedEndpointCapabilities {
+    fflogs_jobs: ProtectedEndpointCapability,
+    fflogs_results: ProtectedEndpointCapability,
+    fflogs_leases_abandon: ProtectedEndpointCapability,
+}
+
+#[derive(Debug, serde::Serialize, Clone)]
+struct ListingDetailCapability {
+    listing_id: u32,
+    token: String,
+    expires_at: i64,
+}
+
+#[derive(Debug, serde::Serialize)]
+struct ContributeMultipleResponse {
+    status: &'static str,
+    requested: usize,
+    accepted: usize,
+    updated: usize,
+    failed: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    detail_capabilities: Vec<ListingDetailCapability>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    protected_endpoints: Option<ProtectedEndpointCapabilities>,
 }
 
 fn build_detail_update_doc(detail: &UploadablePartyDetail) -> Document {
@@ -826,7 +891,93 @@ fn build_detail_update_doc(detail: &UploadablePartyDetail) -> Document {
         set_doc.insert("listing.member_jobs", member_jobs_i32);
     }
 
+    if let Some(slot_flags) = detail.slot_flags.as_ref() {
+        set_doc.insert("listing.detail_slot_flags", slot_flags.clone());
+    }
+
     set_doc
+}
+
+fn issue_capability(
+    state: &State,
+    client_id: &str,
+    scope: CapabilityScope,
+    resource_id: Option<String>,
+    expires_at: i64,
+) -> Option<ProtectedEndpointCapability> {
+    let claims = CapabilityClaims::new(
+        client_id.to_string(),
+        scope,
+        resource_id,
+        Utc::now().timestamp(),
+        expires_at,
+    );
+
+    match ingest_guard::issue_capability_token(&state.ingest_security.capability_secret, &claims) {
+        Ok(token) => Some(ProtectedEndpointCapability { token, expires_at }),
+        Err(error) => {
+            tracing::warn!(?scope, ?error, "failed to issue protected endpoint capability");
+            None
+        }
+    }
+}
+
+fn issue_protected_endpoint_capabilities(
+    state: &State,
+    client_id: &str,
+) -> Option<ProtectedEndpointCapabilities> {
+    let expires_at = Utc::now().timestamp() + state.ingest_security.capability_session_ttl_seconds;
+    Some(ProtectedEndpointCapabilities {
+        fflogs_jobs: issue_capability(state, client_id, CapabilityScope::FflogsJobs, None, expires_at)?,
+        fflogs_results: issue_capability(
+            state,
+            client_id,
+            CapabilityScope::FflogsResults,
+            None,
+            expires_at,
+        )?,
+        fflogs_leases_abandon: issue_capability(
+            state,
+            client_id,
+            CapabilityScope::FflogsLeasesAbandon,
+            None,
+            expires_at,
+        )?,
+    })
+}
+
+fn issue_detail_capabilities(
+    state: &State,
+    client_id: &str,
+    listing_ids: &[u32],
+) -> Vec<ListingDetailCapability> {
+    let expires_at = Utc::now().timestamp() + state.ingest_security.capability_detail_ttl_seconds;
+    let mut deduped = HashSet::new();
+    let mut issued = Vec::with_capacity(listing_ids.len());
+
+    for listing_id in listing_ids {
+        if !deduped.insert(*listing_id) {
+            continue;
+        }
+
+        let Some(capability) = issue_capability(
+            state,
+            client_id,
+            CapabilityScope::Detail,
+            Some(format!("listing:{listing_id}")),
+            expires_at,
+        ) else {
+            continue;
+        };
+
+        issued.push(ListingDetailCapability {
+            listing_id: *listing_id,
+            token: capability.token,
+            expires_at: capability.expires_at,
+        });
+    }
+
+    issued
 }
 
 fn detail_payload_is_too_large(detail: &UploadablePartyDetail, limit: usize) -> Option<&'static str> {
@@ -837,6 +988,12 @@ fn detail_payload_is_too_large(detail: &UploadablePartyDetail, limit: usize) -> 
     if let Some(member_jobs) = detail.member_jobs.as_ref() {
         if member_jobs.len() > limit {
             return Some("too many member jobs in request");
+        }
+    }
+
+    if let Some(slot_flags) = detail.slot_flags.as_ref() {
+        if slot_flags.len() > limit {
+            return Some("too many slot flags in request");
         }
     }
 
@@ -902,17 +1059,31 @@ async fn upsert_detail_leader_if_valid(state: &State, detail: &UploadablePartyDe
 pub async fn contribute_detail_handler(
     state: Arc<State>,
     headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
     detail: UploadablePartyDetail,
 ) -> std::result::Result<warp::reply::Response, Infallible> {
-    if let Err(error) = ingest_guard::authorize_request(
+    let guard_ctx = match ingest_guard::authorize_request(
         &state,
         IngestEndpoint::ContributeDetail,
         &headers,
+        remote_addr,
         "POST",
         "/contribute/detail",
     )
     .await
     {
+        Ok(ctx) => ctx,
+        Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
+    };
+
+    let resource_id = format!("listing:{}", detail.listing_id);
+    if let Err(error) = ingest_guard::require_capability(
+        &state,
+        &headers,
+        &guard_ctx.client_id,
+        CapabilityScope::Detail,
+        Some(&resource_id),
+    ) {
         return Ok(ingest_guard::guard_error_reply(error));
     }
 
@@ -932,12 +1103,14 @@ pub async fn contribute_detail_handler(
         .member_jobs
         .as_ref()
         .map_or(0, |jobs| jobs.iter().filter(|job| **job != 0).count());
+    let slot_flags_len = detail.slot_flags.as_ref().map_or(0, |flags| flags.len());
     tracing::debug!(
         listing_id = detail.listing_id,
         member_count = detail.member_content_ids.len(),
         non_zero_member_count,
         member_jobs_len,
         non_zero_job_count,
+        slot_flags_len,
         "received party detail payload"
     );
 
@@ -1078,11 +1251,13 @@ struct ContributeFflogsLeaseAbandonResponse {
 pub async fn contribute_fflogs_jobs_handler(
     state: Arc<State>,
     headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
 ) -> std::result::Result<warp::reply::Response, Infallible> {
     let guard_ctx = match ingest_guard::authorize_request(
         &state,
         IngestEndpoint::ContributeFflogsJobs,
         &headers,
+        remote_addr,
         "GET",
         "/contribute/fflogs/jobs",
     )
@@ -1091,6 +1266,15 @@ pub async fn contribute_fflogs_jobs_handler(
         Ok(ctx) => ctx,
         Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
     };
+    if let Err(error) = ingest_guard::require_capability(
+        &state,
+        &headers,
+        &guard_ctx.client_id,
+        CapabilityScope::FflogsJobs,
+        None,
+    ) {
+        return Ok(ingest_guard::guard_error_reply(error));
+    }
 
     // 1. 현재 활성 파티 목록 가져오기 (1시간 이내)
     let listings = match get_current_listings(state.collection()).await {
@@ -1329,12 +1513,14 @@ pub async fn contribute_fflogs_jobs_handler(
 pub async fn contribute_fflogs_results_handler(
     state: Arc<State>,
     headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
     results: Vec<ParseResult>,
 ) -> std::result::Result<warp::reply::Response, Infallible> {
     let guard_ctx = match ingest_guard::authorize_request(
         &state,
         IngestEndpoint::ContributeFflogsResults,
         &headers,
+        remote_addr,
         "POST",
         "/contribute/fflogs/results",
     )
@@ -1343,6 +1529,15 @@ pub async fn contribute_fflogs_results_handler(
         Ok(ctx) => ctx,
         Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
     };
+    if let Err(error) = ingest_guard::require_capability(
+        &state,
+        &headers,
+        &guard_ctx.client_id,
+        CapabilityScope::FflogsResults,
+        None,
+    ) {
+        return Ok(ingest_guard::guard_error_reply(error));
+    }
 
     let submitted_results_total = results.len();
     if submitted_results_total > state.max_fflogs_results_batch_size {
@@ -1503,12 +1698,14 @@ pub async fn contribute_fflogs_results_handler(
 pub async fn contribute_fflogs_leases_abandon_handler(
     state: Arc<State>,
     headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
     abandoned_leases: Vec<AbandonFflogsLease>,
 ) -> std::result::Result<warp::reply::Response, Infallible> {
     let guard_ctx = match ingest_guard::authorize_request(
         &state,
         IngestEndpoint::ContributeFflogsLeasesAbandon,
         &headers,
+        remote_addr,
         "POST",
         "/contribute/fflogs/leases/abandon",
     )
@@ -1517,6 +1714,15 @@ pub async fn contribute_fflogs_leases_abandon_handler(
         Ok(ctx) => ctx,
         Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
     };
+    if let Err(error) = ingest_guard::require_capability(
+        &state,
+        &headers,
+        &guard_ctx.client_id,
+        CapabilityScope::FflogsLeasesAbandon,
+        None,
+    ) {
+        return Ok(ingest_guard::guard_error_reply(error));
+    }
 
     let submitted_total = abandoned_leases.len();
     if submitted_total > state.max_fflogs_results_batch_size {
@@ -1618,7 +1824,10 @@ pub async fn contribute_fflogs_leases_abandon_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_member_player;
+    use super::{
+        build_detail_update_doc, detail_payload_is_too_large, resolve_member_player,
+        UploadablePartyDetail,
+    };
     use chrono::Utc;
     use std::collections::HashMap;
 
@@ -1669,5 +1878,52 @@ mod tests {
         assert!(!used_fallback);
         assert_eq!(player.name, "Unknown Member");
         assert_eq!(player.home_world, 0);
+    }
+
+    #[test]
+    fn build_detail_update_doc_includes_raw_slot_flags() {
+        let detail = UploadablePartyDetail {
+            listing_id: 1,
+            leader_content_id: 2,
+            leader_name: "Leader".to_string(),
+            home_world: 73,
+            member_content_ids: vec![11, 0, 22],
+            member_jobs: Some(vec![37, 0, 24]),
+            slot_flags: Some(vec![
+                "0x0000000000000001".to_string(),
+                "0x0000000000000000".to_string(),
+                "0x0000000000000004".to_string(),
+            ]),
+        };
+
+        let update = build_detail_update_doc(&detail);
+
+        assert_eq!(
+            update.get_array("listing.detail_slot_flags").unwrap().len(),
+            3
+        );
+    }
+
+    #[test]
+    fn detail_payload_is_too_large_rejects_excess_slot_flags() {
+        let detail = UploadablePartyDetail {
+            listing_id: 1,
+            leader_content_id: 2,
+            leader_name: "Leader".to_string(),
+            home_world: 73,
+            member_content_ids: vec![11, 0, 22],
+            member_jobs: Some(vec![37, 0, 24]),
+            slot_flags: Some(vec![
+                "0x1".to_string(),
+                "0x2".to_string(),
+                "0x3".to_string(),
+                "0x4".to_string(),
+            ]),
+        };
+
+        assert_eq!(
+            detail_payload_is_too_large(&detail, 3),
+            Some("too many slot flags in request")
+        );
     }
 }

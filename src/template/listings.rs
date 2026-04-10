@@ -98,6 +98,8 @@ pub struct ParseDisplay {
     pub has_secondary: bool,
     /// FFLogs에서 Hidden 처리된 캐릭터인지 여부
     pub hidden: bool,
+    /// Hidden plugin cache 때문에 fallback parse를 쓰는지 여부
+    pub originally_hidden: bool,
     /// FFLogs 캐릭터 매칭이 추정(동명이인 후보 탐색) 결과인지 여부
     pub estimated: bool,
     pub source: crate::parse_resolver::ParseSource,
@@ -112,6 +114,7 @@ impl ParseDisplay {
         p2_class: String,
         has_secondary: bool,
         hidden: bool,
+        originally_hidden: bool,
         estimated: bool,
         source: crate::parse_resolver::ParseSource,
     ) -> Self {
@@ -122,6 +125,7 @@ impl ParseDisplay {
             secondary_color_class: p2_class,
             has_secondary,
             hidden,
+            originally_hidden,
             estimated,
             source,
         }
@@ -138,7 +142,7 @@ impl ParseDisplay {
     /// only report-parse fallback rows render the right-rail HID tag.
     /// plain hidden FFLogs rows keep the left-side HID parse state only.
     pub fn hidden_rail_tag_label(&self) -> Option<&'static str> {
-        if matches!(self.source, crate::parse_resolver::ParseSource::ReportParse) {
+        if self.originally_hidden {
             Some("HID")
         } else {
             None
@@ -146,7 +150,7 @@ impl ParseDisplay {
     }
 
     pub fn hidden_rail_tag_title(&self) -> &'static str {
-        if matches!(self.source, crate::parse_resolver::ParseSource::ReportParse) {
+        if self.originally_hidden {
             "FFLogs: Originally hidden player"
         } else {
             "FFLogs: Hidden"
@@ -403,6 +407,7 @@ mod tests {
             false,
             false,
             false,
+            false,
             crate::parse_resolver::ParseSource::Plugin,
         );
         let fallback = ParseDisplay::new(
@@ -410,6 +415,7 @@ mod tests {
             "parse-purple".to_string(),
             None,
             "parse-none".to_string(),
+            false,
             false,
             false,
             false,
@@ -430,6 +436,7 @@ mod tests {
             false,
             true,
             false,
+            false,
             crate::parse_resolver::ParseSource::Plugin,
         );
         let report_parse_fallback = ParseDisplay::new(
@@ -437,6 +444,18 @@ mod tests {
             "parse-purple".to_string(),
             None,
             "parse-none".to_string(),
+            false,
+            false,
+            true,
+            false,
+            crate::parse_resolver::ParseSource::ReportParse,
+        );
+        let report_parse_without_hidden_origin = ParseDisplay::new(
+            Some(88),
+            "parse-purple".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
             false,
             false,
             false,
@@ -450,16 +469,22 @@ mod tests {
             false,
             false,
             false,
+            false,
             crate::parse_resolver::ParseSource::Plugin,
         );
 
         assert_eq!(hidden_plugin.hidden_rail_tag_label(), None);
         assert_eq!(report_parse_fallback.hidden_rail_tag_label(), Some("HID"));
+        assert_eq!(report_parse_without_hidden_origin.hidden_rail_tag_label(), None);
         assert_eq!(visible_plugin.hidden_rail_tag_label(), None);
         assert_eq!(hidden_plugin.hidden_rail_tag_title(), "FFLogs: Hidden");
         assert_eq!(
             report_parse_fallback.hidden_rail_tag_title(),
             "FFLogs: Originally hidden player"
+        );
+        assert_eq!(
+            report_parse_without_hidden_origin.hidden_rail_tag_title(),
+            "FFLogs: Hidden"
         );
         assert_eq!(visible_plugin.hidden_rail_tag_title(), "FFLogs: Hidden");
     }

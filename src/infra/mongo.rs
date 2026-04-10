@@ -20,6 +20,7 @@ fn is_valid_world_id(world_id: u16) -> bool {
 fn strip_detail_managed_listing_fields(listing_doc: &mut Document) {
     listing_doc.remove("member_content_ids");
     listing_doc.remove("member_jobs");
+    listing_doc.remove("detail_slot_flags");
     listing_doc.remove("leader_content_id");
 }
 

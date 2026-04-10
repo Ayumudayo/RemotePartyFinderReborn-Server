@@ -22,6 +22,7 @@ pub struct ResolvedParseData {
     pub secondary_color_class: String,
     pub has_secondary: bool,
     pub hidden: bool,
+    pub originally_hidden: bool,
     pub estimated: bool,
     pub primary_boss_percentage: Option<u8>,
     pub secondary_boss_percentage: Option<u8>,
@@ -39,6 +40,7 @@ impl ResolvedParseData {
             secondary_color_class: "parse-none".to_string(),
             has_secondary,
             hidden: false,
+            originally_hidden: false,
             estimated: false,
             primary_boss_percentage: None,
             secondary_boss_percentage: None,
@@ -57,7 +59,7 @@ fn hydrate_slot(
     };
 
     let percentile = if enc_parse.percentile >= 0.0 {
-        Some(enc_parse.percentile.round().clamp(0.0, 100.0) as u8)
+        Some(enc_parse.percentile.clamp(0.0, 100.0).floor() as u8)
     } else {
         None
     };
@@ -126,6 +128,7 @@ pub fn resolve_parse_data(
                 })
             {
                 resolved.source = ParseSource::ReportParse;
+                resolved.originally_hidden = true;
 
                 let (p1, p1_class, p1_boss, p1_clears) = hydrate_slot(encounters, encounter_id);
                 resolved.primary_percentile = p1;
@@ -282,8 +285,9 @@ mod tests {
         let resolved = resolve_parse_data(None, Some(&fallback), 123, None);
 
         assert_eq!(resolved.source, ParseSource::ReportParse);
-        assert_eq!(resolved.primary_percentile, Some(92));
+        assert_eq!(resolved.primary_percentile, Some(91));
         assert!(!resolved.hidden);
+        assert!(!resolved.originally_hidden);
     }
 
     #[test]
@@ -295,5 +299,38 @@ mod tests {
         assert_eq!(resolved.source, ParseSource::None);
         assert_eq!(resolved.primary_percentile, None);
         assert!(!resolved.hidden);
+    }
+
+    #[test]
+    fn resolve_parse_data_marks_fallback_as_originally_hidden_only_for_hidden_plugin_rows() {
+        let hidden_plugin = zone_cache(
+            true,
+            false,
+            HashMap::from([("123".to_string(), encounter(99.0, None, Some(9)))]),
+        );
+        let fallback = HashMap::from([("123".to_string(), encounter(84.2, Some(7.0), Some(2)))]);
+
+        let hidden_resolved = resolve_parse_data(Some(&hidden_plugin), Some(&fallback), 123, None);
+        assert_eq!(hidden_resolved.source, ParseSource::ReportParse);
+        assert!(hidden_resolved.originally_hidden);
+        assert!(!hidden_resolved.hidden);
+
+        let missing_resolved = resolve_parse_data(None, Some(&fallback), 123, None);
+        assert_eq!(missing_resolved.source, ParseSource::ReportParse);
+        assert!(!missing_resolved.originally_hidden);
+    }
+
+    #[test]
+    fn resolve_parse_data_truncates_percentile_instead_of_rounding_up_to_100() {
+        let plugin = zone_cache(
+            false,
+            false,
+            HashMap::from([("123".to_string(), encounter(99.9, None, Some(1)))]),
+        );
+
+        let resolved = resolve_parse_data(Some(&plugin), None, 123, None);
+
+        assert_eq!(resolved.primary_percentile, Some(99));
+        assert_eq!(resolved.primary_color_class, "parse-pink");
     }
 }
