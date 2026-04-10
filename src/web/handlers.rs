@@ -827,6 +827,8 @@ pub struct UploadablePartyDetail {
     pub member_content_ids: Vec<u64>,
     #[serde(default)]
     pub member_jobs: Option<Vec<u8>>,
+    #[serde(default)]
+    pub slot_flags: Option<Vec<String>>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -887,6 +889,10 @@ fn build_detail_update_doc(detail: &UploadablePartyDetail) -> Document {
             .map(|job| i32::from(*job))
             .collect::<Vec<_>>();
         set_doc.insert("listing.member_jobs", member_jobs_i32);
+    }
+
+    if let Some(slot_flags) = detail.slot_flags.as_ref() {
+        set_doc.insert("listing.detail_slot_flags", slot_flags.clone());
     }
 
     set_doc
@@ -982,6 +988,12 @@ fn detail_payload_is_too_large(detail: &UploadablePartyDetail, limit: usize) -> 
     if let Some(member_jobs) = detail.member_jobs.as_ref() {
         if member_jobs.len() > limit {
             return Some("too many member jobs in request");
+        }
+    }
+
+    if let Some(slot_flags) = detail.slot_flags.as_ref() {
+        if slot_flags.len() > limit {
+            return Some("too many slot flags in request");
         }
     }
 
@@ -1091,12 +1103,14 @@ pub async fn contribute_detail_handler(
         .member_jobs
         .as_ref()
         .map_or(0, |jobs| jobs.iter().filter(|job| **job != 0).count());
+    let slot_flags_len = detail.slot_flags.as_ref().map_or(0, |flags| flags.len());
     tracing::debug!(
         listing_id = detail.listing_id,
         member_count = detail.member_content_ids.len(),
         non_zero_member_count,
         member_jobs_len,
         non_zero_job_count,
+        slot_flags_len,
         "received party detail payload"
     );
 
@@ -1810,7 +1824,10 @@ pub async fn contribute_fflogs_leases_abandon_handler(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_member_player;
+    use super::{
+        build_detail_update_doc, detail_payload_is_too_large, resolve_member_player,
+        UploadablePartyDetail,
+    };
     use chrono::Utc;
     use std::collections::HashMap;
 
@@ -1861,5 +1878,52 @@ mod tests {
         assert!(!used_fallback);
         assert_eq!(player.name, "Unknown Member");
         assert_eq!(player.home_world, 0);
+    }
+
+    #[test]
+    fn build_detail_update_doc_includes_raw_slot_flags() {
+        let detail = UploadablePartyDetail {
+            listing_id: 1,
+            leader_content_id: 2,
+            leader_name: "Leader".to_string(),
+            home_world: 73,
+            member_content_ids: vec![11, 0, 22],
+            member_jobs: Some(vec![37, 0, 24]),
+            slot_flags: Some(vec![
+                "0x0000000000000001".to_string(),
+                "0x0000000000000000".to_string(),
+                "0x0000000000000004".to_string(),
+            ]),
+        };
+
+        let update = build_detail_update_doc(&detail);
+
+        assert_eq!(
+            update.get_array("listing.detail_slot_flags").unwrap().len(),
+            3
+        );
+    }
+
+    #[test]
+    fn detail_payload_is_too_large_rejects_excess_slot_flags() {
+        let detail = UploadablePartyDetail {
+            listing_id: 1,
+            leader_content_id: 2,
+            leader_name: "Leader".to_string(),
+            home_world: 73,
+            member_content_ids: vec![11, 0, 22],
+            member_jobs: Some(vec![37, 0, 24]),
+            slot_flags: Some(vec![
+                "0x1".to_string(),
+                "0x2".to_string(),
+                "0x3".to_string(),
+                "0x4".to_string(),
+            ]),
+        };
+
+        assert_eq!(
+            detail_payload_is_too_large(&detail, 3),
+            Some("too many slot flags in request")
+        );
     }
 }
