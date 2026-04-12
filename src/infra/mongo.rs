@@ -13,6 +13,8 @@ use mongodb::{
 use crate::listing::PartyFinderListing;
 use crate::listing_container::{ListingContainer, QueriedListing};
 
+const IDENTITY_UPSERT_MAX_RETRIES: usize = 3;
+
 fn is_valid_world_id(world_id: u16) -> bool {
     world_id < 1_000
 }
@@ -162,6 +164,7 @@ pub enum CharacterIdentityRejectReason {
     MissingContentId,
     MissingName,
     InvalidHomeWorld,
+    ObservedAtTooFarInFuture,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -209,8 +212,40 @@ fn prepare_player_upsert(
     })
 }
 
+fn build_player_upsert_documents(
+    op: &PreparedPlayerUpsert,
+    now: DateTime<Utc>,
+) -> (Document, Document) {
+    let mut set_doc = doc! {
+        "account_id": op.account_id.clone(),
+        "name": op.name.clone(),
+        "last_seen": now,
+        "identity_observed_at": now,
+    };
+
+    let mut set_on_insert_doc = doc! {
+        "content_id": op.content_id as i64,
+    };
+
+    if op.home_world != 0 {
+        set_doc.insert("home_world", op.home_world as u32);
+    } else {
+        set_on_insert_doc.insert("home_world", 0u32);
+    }
+
+    if op.current_world != 0 {
+        set_doc.insert("current_world", op.current_world as u32);
+    } else {
+        set_on_insert_doc.insert("current_world", 0u32);
+    }
+
+    (set_doc, set_on_insert_doc)
+}
+
 pub fn prepare_character_identity_upsert(
     identity: &crate::player::UploadableCharacterIdentity,
+    now: DateTime<Utc>,
+    max_future_skew_seconds: i64,
 ) -> Result<PreparedCharacterIdentityUpsert, CharacterIdentityRejectReason> {
     if identity.content_id == 0 {
         return Err(CharacterIdentityRejectReason::MissingContentId);
@@ -222,6 +257,11 @@ pub fn prepare_character_identity_upsert(
 
     if !is_valid_world_id(identity.home_world) {
         return Err(CharacterIdentityRejectReason::InvalidHomeWorld);
+    }
+
+    let max_allowed_observed_at = now + TimeDelta::seconds(max_future_skew_seconds.max(0));
+    if identity.observed_at > max_allowed_observed_at {
+        return Err(CharacterIdentityRejectReason::ObservedAtTooFarInFuture);
     }
 
     Ok(PreparedCharacterIdentityUpsert {
@@ -275,27 +315,7 @@ pub async fn upsert_players(
         let now = now.clone();
         async move {
             let content_id = op.content_id;
-            let mut set_doc = doc! {
-                "account_id": op.account_id,
-                "name": op.name,
-                "last_seen": now,
-            };
-
-            let mut set_on_insert_doc = doc! {
-                "content_id": op.content_id as i64,
-            };
-
-            if op.home_world != 0 {
-                set_doc.insert("home_world", op.home_world as u32);
-            } else {
-                set_on_insert_doc.insert("home_world", 0u32);
-            }
-
-            if op.current_world != 0 {
-                set_doc.insert("current_world", op.current_world as u32);
-            } else {
-                set_on_insert_doc.insert("current_world", 0u32);
-            }
+            let (set_doc, set_on_insert_doc) = build_player_upsert_documents(&op, now);
 
             collection
                 .update_one(
@@ -367,26 +387,110 @@ fn get_identity_observed_at(document: &Document) -> Option<DateTime<Utc>> {
         .map(|value| value.to_chrono())
 }
 
+fn get_last_seen(document: &Document) -> Option<DateTime<Utc>> {
+    document
+        .get_datetime("last_seen")
+        .ok()
+        .map(|value| value.to_chrono())
+}
+
+fn get_player_freshness(document: &Document) -> Option<DateTime<Utc>> {
+    get_identity_observed_at(document).or_else(|| get_last_seen(document))
+}
+
+fn build_identity_compare_and_set_filter(
+    content_id: u64,
+    existing_doc: Option<&Document>,
+) -> Document {
+    match existing_doc.and_then(get_identity_observed_at) {
+        Some(identity_observed_at) => doc! {
+            "content_id": content_id as i64,
+            "identity_observed_at": identity_observed_at,
+        },
+        None => match existing_doc.and_then(get_last_seen) {
+            Some(last_seen) => doc! {
+                "content_id": content_id as i64,
+                "last_seen": last_seen,
+                "$or": [
+                    { "identity_observed_at": { "$exists": false } },
+                    { "identity_observed_at": mongodb::bson::Bson::Null },
+                ],
+            },
+            None => doc! {
+                "content_id": content_id as i64,
+                "$or": [
+                    { "identity_observed_at": { "$exists": false } },
+                    { "identity_observed_at": mongodb::bson::Bson::Null },
+                ],
+            },
+        },
+    }
+}
+
+fn build_identity_upsert_update(
+    content_id: u64,
+    merged: &crate::player::IdentityMergeResult,
+) -> Document {
+    let mut set_doc = doc! {
+        "content_id": merged.player.content_id as i64,
+        "name": merged.player.name.clone(),
+        "home_world": merged.player.home_world as u32,
+        "current_world": merged.player.current_world as u32,
+        "last_seen": merged.player.last_seen,
+        "seen_count": merged.player.seen_count as u32,
+        "account_id": merged.player.account_id.clone(),
+        "identity_observed_at": merged.identity_observed_at,
+    };
+
+    if merged.applied_incoming_identity {
+        set_doc.insert("world_name", merged.world_name.clone());
+        set_doc.insert(
+            "identity_source",
+            if merged.source.trim().is_empty() {
+                "unknown".to_string()
+            } else {
+                merged.source.clone()
+            },
+        );
+    }
+
+    doc! {
+        "$set": set_doc,
+        "$setOnInsert": {
+            "content_id": content_id as i64,
+        },
+    }
+}
+
 pub async fn upsert_character_identities(
     collection: Collection<crate::player::Player>,
     identities: &[crate::player::UploadableCharacterIdentity],
     concurrency: usize,
+    max_future_skew_seconds: i64,
 ) -> anyhow::Result<PlayerUpsertReport> {
     let mut prepared = Vec::with_capacity(identities.len());
     let mut invalid_missing_content_id = 0usize;
     let mut invalid_missing_name = 0usize;
     let mut invalid_home_world = 0usize;
+    let mut invalid_future_observed_at = 0usize;
+    let now = Utc::now();
 
     for identity in identities {
-        match prepare_character_identity_upsert(identity) {
+        match prepare_character_identity_upsert(identity, now, max_future_skew_seconds) {
             Ok(op) => prepared.push(op),
             Err(CharacterIdentityRejectReason::MissingContentId) => invalid_missing_content_id += 1,
             Err(CharacterIdentityRejectReason::MissingName) => invalid_missing_name += 1,
             Err(CharacterIdentityRejectReason::InvalidHomeWorld) => invalid_home_world += 1,
+            Err(CharacterIdentityRejectReason::ObservedAtTooFarInFuture) => {
+                invalid_future_observed_at += 1
+            }
         }
     }
 
-    let invalid = invalid_missing_content_id + invalid_missing_name + invalid_home_world;
+    let invalid = invalid_missing_content_id
+        + invalid_missing_name
+        + invalid_home_world
+        + invalid_future_observed_at;
     if invalid > 0 {
         tracing::debug!(
             requested = identities.len(),
@@ -394,6 +498,7 @@ pub async fn upsert_character_identities(
             invalid_missing_content_id,
             invalid_missing_name,
             invalid_home_world,
+            invalid_future_observed_at,
             "Dropped invalid character identity rows before MongoDB upsert"
         );
     }
@@ -408,68 +513,60 @@ pub async fn upsert_character_identities(
         let raw_collection = raw_collection.clone();
         async move {
             let content_id = op.content_id;
-            let filter = doc! { "content_id": content_id as i64 };
-            let existing_doc: Option<Document> = raw_collection
-                .find_one(filter.clone(), None)
-                .await
-                .map_err(|error| (content_id, error))?;
-
-            let existing_player = existing_doc.as_ref().and_then(|document| {
-                mongodb::bson::from_document::<crate::player::Player>(document.clone()).ok()
-            });
-            let existing_identity_observed_at =
-                existing_doc.as_ref().and_then(get_identity_observed_at);
-            let incoming_identity = crate::player::UploadableCharacterIdentity {
-                content_id: op.content_id,
-                name: op.name.clone(),
-                home_world: op.home_world,
-                world_name: op.world_name.clone(),
-                source: op.source.clone(),
-                observed_at: op.observed_at,
-            };
-            let merged = crate::player::merge_identity_into_player(
-                existing_player.as_ref(),
-                existing_identity_observed_at,
-                &incoming_identity,
-                Utc::now(),
-            );
-
-            let mut set_doc = doc! {
-                "content_id": merged.player.content_id as i64,
-                "name": merged.player.name,
-                "home_world": merged.player.home_world as u32,
-                "current_world": merged.player.current_world as u32,
-                "last_seen": merged.player.last_seen,
-                "seen_count": merged.player.seen_count as u32,
-                "account_id": merged.player.account_id,
-                "identity_observed_at": merged.identity_observed_at,
-            };
-
-            if merged.applied_incoming_identity {
-                set_doc.insert("world_name", merged.world_name);
-                set_doc.insert(
-                    "identity_source",
-                    if merged.source.trim().is_empty() {
-                        "unknown".to_string()
-                    } else {
-                        merged.source
-                    },
+            for _ in 0..IDENTITY_UPSERT_MAX_RETRIES {
+                let read_filter = doc! { "content_id": content_id as i64 };
+                let existing_doc: Option<Document> = raw_collection
+                    .find_one(read_filter, None)
+                    .await
+                    .map_err(|error| (content_id, anyhow::Error::new(error)))?;
+                let existing_player = existing_doc.as_ref().and_then(|document| {
+                    mongodb::bson::from_document::<crate::player::Player>(document.clone()).ok()
+                });
+                let existing_identity_observed_at =
+                    existing_doc.as_ref().and_then(get_player_freshness);
+                let incoming_identity = crate::player::UploadableCharacterIdentity {
+                    content_id: op.content_id,
+                    name: op.name.clone(),
+                    home_world: op.home_world,
+                    world_name: op.world_name.clone(),
+                    source: op.source.clone(),
+                    observed_at: op.observed_at,
+                };
+                let merged = crate::player::merge_identity_into_player(
+                    existing_player.as_ref(),
+                    existing_identity_observed_at,
+                    &incoming_identity,
+                    Utc::now(),
                 );
+
+                if !merged.applied_incoming_identity {
+                    return Ok(());
+                }
+
+                let compare_and_set_filter =
+                    build_identity_compare_and_set_filter(content_id, existing_doc.as_ref());
+                let update = build_identity_upsert_update(content_id, &merged);
+                let write_result = collection
+                    .update_one(
+                        compare_and_set_filter,
+                        update,
+                        UpdateOptions::builder().upsert(true).build(),
+                    )
+                    .await
+                    .map_err(|error| (content_id, anyhow::Error::new(error)))?;
+
+                if write_result.modified_count > 0
+                    || write_result.matched_count > 0
+                    || write_result.upserted_id.is_some()
+                {
+                    return Ok(());
+                }
             }
 
-            collection
-                .update_one(
-                    filter,
-                    doc! {
-                        "$set": set_doc,
-                        "$setOnInsert": {
-                            "content_id": content_id as i64,
-                        },
-                    },
-                    UpdateOptions::builder().upsert(true).build(),
-                )
-                .await
-                .map_err(|error| (content_id, error))
+            Err((
+                content_id,
+                anyhow::anyhow!("character identity compare-and-set retries exhausted"),
+            ))
         }
     }))
     .buffer_unordered(concurrency.max(1));
@@ -696,4 +793,76 @@ pub async fn get_report_parse_summaries_by_zone(
     }
 
     Ok(summaries)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        build_identity_compare_and_set_filter, build_player_upsert_documents,
+        PreparedPlayerUpsert,
+    };
+    use chrono::Utc;
+    use mongodb::bson::doc;
+
+    #[test]
+    fn identity_player_upsert_sets_shared_freshness_metadata() {
+        let now = chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let prepared = PreparedPlayerUpsert {
+            content_id: 1001,
+            name: "Known Player".to_string(),
+            home_world: 74,
+            current_world: 79,
+            account_id: "123".to_string(),
+        };
+
+        let (set_doc, set_on_insert_doc) = build_player_upsert_documents(&prepared, now);
+
+        assert_eq!(set_doc.get_datetime("last_seen").unwrap().to_chrono(), now);
+        assert_eq!(
+            set_doc.get_datetime("identity_observed_at").unwrap().to_chrono(),
+            now
+        );
+        assert_eq!(set_on_insert_doc.get_i64("content_id").unwrap(), 1001);
+    }
+
+    #[test]
+    fn identity_compare_and_set_filter_uses_previously_read_freshness() {
+        let freshness = chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let existing = doc! {
+            "content_id": 6006i64,
+            "identity_observed_at": freshness,
+        };
+
+        let filter = build_identity_compare_and_set_filter(6006, Some(&existing));
+
+        assert_eq!(filter.get_i64("content_id").unwrap(), 6006);
+        assert_eq!(
+            filter
+                .get_datetime("identity_observed_at")
+                .unwrap()
+                .to_chrono(),
+            freshness
+        );
+    }
+
+    #[test]
+    fn identity_compare_and_set_filter_falls_back_to_legacy_last_seen_when_freshness_missing() {
+        let last_seen = chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let existing = doc! {
+            "content_id": 7007i64,
+            "last_seen": last_seen,
+        };
+
+        let filter = build_identity_compare_and_set_filter(7007, Some(&existing));
+
+        assert_eq!(filter.get_i64("content_id").unwrap(), 7007);
+        assert_eq!(filter.get_datetime("last_seen").unwrap().to_chrono(), last_seen);
+        assert_eq!(filter.get_array("$or").unwrap().len(), 2);
+    }
 }

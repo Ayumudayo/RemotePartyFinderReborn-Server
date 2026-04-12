@@ -892,6 +892,7 @@ pub async fn contribute_character_identity_handler(
         state.players_collection(),
         &identities,
         state.player_upsert_concurrency,
+        state.ingest_security.clock_skew_seconds,
     )
     .await;
 
@@ -2088,6 +2089,61 @@ mod tests {
         })
     }
 
+    async fn test_state_with_open_ingest() -> Arc<crate::web::State> {
+        let mongo = mongodb::Client::with_uri_str("mongodb://127.0.0.1:27017")
+            .await
+            .expect("construct test mongo client");
+        let (tx, _) = tokio::sync::broadcast::channel(1);
+
+        Arc::new(crate::web::State {
+            mongo,
+            stats: Default::default(),
+            listings_channel: tx,
+            fflogs_jobs_limit: 1,
+            fflogs_hidden_cache_ttl_hours: 24,
+            listing_upsert_concurrency: 1,
+            player_upsert_concurrency: 1,
+            max_body_bytes_contribute: 1024,
+            max_body_bytes_multiple: 1024,
+            max_body_bytes_players: 1024,
+            max_body_bytes_detail: 1024,
+            max_body_bytes_fflogs_results: 1024,
+            max_multiple_batch_size: 10,
+            max_players_batch_size: 10,
+            max_fflogs_results_batch_size: 10,
+            max_detail_member_count: 8,
+            ingest_security: crate::web::IngestSecurityConfig {
+                require_signature: false,
+                shared_secret: "test-shared-secret".to_string(),
+                clock_skew_seconds: 300,
+                nonce_ttl_seconds: 300,
+                require_capabilities_for_protected_endpoints: false,
+                capability_secret: "test-capability-secret".to_string(),
+                capability_session_ttl_seconds: 300,
+                capability_detail_ttl_seconds: 300,
+                rate_limits: crate::web::IngestRateLimits {
+                    contribute_per_minute: 60,
+                    multiple_per_minute: 60,
+                    players_per_minute: 60,
+                    detail_per_minute: 60,
+                    fflogs_jobs_per_minute: 60,
+                    fflogs_results_per_minute: 60,
+                },
+            },
+            ingest_rate_windows: Default::default(),
+            ingest_nonces: Default::default(),
+            fflogs_job_leases: Default::default(),
+            fflogs_jobs_dispatched_total: Default::default(),
+            fflogs_results_received_total: Default::default(),
+            fflogs_results_rejected_total: Default::default(),
+            fflogs_leases_abandoned_total: Default::default(),
+            fflogs_leases_abandon_rejected_total: Default::default(),
+            fflogs_hidden_refresh_total: Default::default(),
+            fflogs_leader_fallback_total: Default::default(),
+            monitor_snapshot_interval_seconds: 0,
+        })
+    }
+
     #[test]
     fn resolve_member_player_uses_existing_player_when_present() {
         let uid = 101u64;
@@ -2208,11 +2264,11 @@ mod tests {
         };
 
         assert!(matches!(
-            crate::mongo::prepare_character_identity_upsert(&empty_name),
+            crate::mongo::prepare_character_identity_upsert(&empty_name, observed_at, 300),
             Err(crate::mongo::CharacterIdentityRejectReason::MissingName)
         ));
         assert!(matches!(
-            crate::mongo::prepare_character_identity_upsert(&invalid_world),
+            crate::mongo::prepare_character_identity_upsert(&invalid_world, observed_at, 300),
             Err(crate::mongo::CharacterIdentityRejectReason::InvalidHomeWorld)
         ));
     }
@@ -2304,5 +2360,29 @@ mod tests {
                 .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn identity_endpoint_rejects_future_observed_at_beyond_clock_skew() {
+        let state = test_state_with_open_ingest().await;
+        let payload = vec![crate::player::UploadableCharacterIdentity {
+            content_id: 7008,
+            name: "Future Name".to_string(),
+            home_world: 74,
+            world_name: "Tonberry".to_string(),
+            source: "chara_card".to_string(),
+            observed_at: Utc::now() + chrono::TimeDelta::seconds(301),
+        }];
+
+        let response = super::contribute_character_identity_handler(
+            state,
+            HeaderMap::new(),
+            None,
+            payload,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
 }
