@@ -14,6 +14,7 @@ use crate::listing::PartyFinderListing;
 use crate::listing_container::{ListingContainer, QueriedListing};
 
 const IDENTITY_UPSERT_MAX_RETRIES: usize = 3;
+const PLAYER_UPSERT_MAX_RETRIES: usize = 3;
 
 fn is_valid_world_id(world_id: u16) -> bool {
     world_id < 1_000
@@ -24,6 +25,20 @@ fn strip_detail_managed_listing_fields(listing_doc: &mut Document) {
     listing_doc.remove("member_jobs");
     listing_doc.remove("detail_slot_flags");
     listing_doc.remove("leader_content_id");
+}
+
+fn is_duplicate_key_error(error: &mongodb::error::Error) -> bool {
+    match error.kind.as_ref() {
+        mongodb::error::ErrorKind::Write(mongodb::error::WriteFailure::WriteError(write_error)) => {
+            write_error.code == 11_000
+        }
+        mongodb::error::ErrorKind::BulkWrite(bulk_failure) => bulk_failure
+            .write_errors
+            .as_ref()
+            .is_some_and(|errors| errors.iter().any(|error| error.code == 11_000)),
+        mongodb::error::ErrorKind::Command(command_error) => command_error.code == 11_000,
+        _ => false,
+    }
 }
 
 fn listing_upsert_filter(listing: &PartyFinderListing) -> Document {
@@ -316,19 +331,34 @@ pub async fn upsert_players(
         async move {
             let content_id = op.content_id;
             let (set_doc, set_on_insert_doc) = build_player_upsert_documents(&op, now);
+            let update = doc! {
+                "$set": set_doc,
+                "$inc": { "seen_count": 1 },
+                "$setOnInsert": set_on_insert_doc,
+            };
 
-            collection
-                .update_one(
-                    doc! { "content_id": op.content_id as i64 },
-                    doc! {
-                        "$set": set_doc,
-                        "$inc": { "seen_count": 1 },
-                        "$setOnInsert": set_on_insert_doc,
-                    },
-                    UpdateOptions::builder().upsert(true).build(),
-                )
-                .await
-                .map_err(|error| (content_id, error))
+            for _ in 0..PLAYER_UPSERT_MAX_RETRIES {
+                match collection
+                    .update_one(
+                        doc! { "content_id": op.content_id as i64 },
+                        update.clone(),
+                        UpdateOptions::builder().upsert(true).build(),
+                    )
+                    .await
+                {
+                    Ok(_) => return Ok(()),
+                    Err(error) if is_duplicate_key_error(&error) => continue,
+                    Err(error) => return Err((content_id, error)),
+                }
+            }
+
+            Err((
+                content_id,
+                mongodb::error::Error::from(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    "player content_id upsert retries exhausted",
+                )),
+            ))
         }
     }))
     .buffer_unordered(concurrency.max(1));
@@ -552,8 +582,13 @@ pub async fn upsert_character_identities(
                         update,
                         UpdateOptions::builder().upsert(true).build(),
                     )
-                    .await
-                    .map_err(|error| (content_id, anyhow::Error::new(error)))?;
+                    .await;
+
+                let write_result = match write_result {
+                    Ok(result) => result,
+                    Err(error) if is_duplicate_key_error(&error) => continue,
+                    Err(error) => return Err((content_id, anyhow::Error::new(error))),
+                };
 
                 if write_result.modified_count > 0
                     || write_result.matched_count > 0
@@ -799,7 +834,7 @@ pub async fn get_report_parse_summaries_by_zone(
 mod tests {
     use super::{
         build_identity_compare_and_set_filter, build_player_upsert_documents,
-        PreparedPlayerUpsert,
+        is_duplicate_key_error, PreparedPlayerUpsert,
     };
     use chrono::Utc;
     use mongodb::bson::doc;
@@ -864,5 +899,18 @@ mod tests {
         assert_eq!(filter.get_i64("content_id").unwrap(), 7007);
         assert_eq!(filter.get_datetime("last_seen").unwrap().to_chrono(), last_seen);
         assert_eq!(filter.get_array("$or").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn identity_duplicate_key_errors_are_retryable() {
+        let write_error: mongodb::error::WriteError = serde_json::from_str(
+            r#"{"code":11000,"codeName":"DuplicateKey","errmsg":"E11000 duplicate key error"}"#,
+        )
+        .unwrap();
+        let error = mongodb::error::Error::from(mongodb::error::ErrorKind::Write(
+            mongodb::error::WriteFailure::WriteError(write_error),
+        ));
+
+        assert!(is_duplicate_key_error(&error));
     }
 }

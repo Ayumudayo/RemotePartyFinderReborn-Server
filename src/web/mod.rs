@@ -8,6 +8,7 @@ use std::{
 };
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
+use futures_util::StreamExt;
 use mongodb::{
     options::IndexOptions,
     Client as MongoClient, Collection, IndexModel,
@@ -131,6 +132,66 @@ pub struct IngestRateKey {
 pub struct IngestRateWindow {
     pub window_started: DateTime<Utc>,
     pub count: u32,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[allow(dead_code)]
+struct PlayerDuplicateGroup {
+    #[serde(rename = "_id")]
+    content_id: i64,
+    winner_id: mongodb::bson::oid::ObjectId,
+    duplicate_ids: Vec<mongodb::bson::oid::ObjectId>,
+    count: i32,
+}
+
+fn players_content_id_unique_index_model() -> IndexModel {
+    IndexModel::builder()
+        .keys(mongodb::bson::doc! {
+            "content_id": 1,
+        })
+        .options(IndexOptions::builder().unique(true).build())
+        .build()
+}
+
+fn players_content_id_dedupe_pipeline() -> Vec<mongodb::bson::Document> {
+    vec![
+        mongodb::bson::doc! {
+            "$match": {
+                "content_id": { "$exists": true },
+            }
+        },
+        mongodb::bson::doc! {
+            "$sort": {
+                "content_id": 1,
+                "identity_observed_at": -1,
+                "last_seen": -1,
+                "seen_count": -1,
+                "_id": 1,
+            }
+        },
+        mongodb::bson::doc! {
+            "$group": {
+                "_id": "$content_id",
+                "winner_id": { "$first": "$_id" },
+                "duplicate_ids": { "$push": "$_id" },
+                "count": { "$sum": 1 },
+            }
+        },
+        mongodb::bson::doc! {
+            "$match": {
+                "count": { "$gt": 1 },
+            }
+        },
+    ]
+}
+
+fn duplicate_ids_to_remove(group: &PlayerDuplicateGroup) -> Vec<mongodb::bson::oid::ObjectId> {
+    group
+        .duplicate_ids
+        .iter()
+        .copied()
+        .filter(|id| *id != group.winner_id)
+        .collect()
 }
 
 impl State {
@@ -271,18 +332,100 @@ impl State {
             .await
             .context("could not create parse index")?;
 
-        // Players collection index (frequent lookups by content_id)
-        self.players_collection()
-            .create_index(
-                IndexModel::builder()
-                    .keys(mongodb::bson::doc! {
-                        "content_id": 1,
-                    })
-                    .build(),
-                None,
-            )
+        self.ensure_players_content_id_unique_index().await?;
+
+        Ok(())
+    }
+
+    async fn ensure_players_content_id_unique_index(&self) -> Result<()> {
+        let collection = self.players_collection().clone_with_type::<mongodb::bson::Document>();
+        self.dedupe_players_by_content_id(collection.clone()).await?;
+
+        let mut has_unique_content_id_index = false;
+        let mut existing_indexes = collection
+            .list_indexes(None)
             .await
-            .context("could not create players content_id index")?;
+            .context("could not list players indexes")?;
+        while let Some(index) = existing_indexes.next().await {
+            let index = index.context("could not read players index")?;
+            let is_content_id_index = index
+                .keys
+                .get_i32("content_id")
+                .ok()
+                .is_some_and(|value| value == 1)
+                && index.keys.len() == 1;
+            if !is_content_id_index {
+                continue;
+            }
+
+            let is_unique = index
+                .options
+                .as_ref()
+                .and_then(|options| options.unique)
+                .unwrap_or(false);
+            let name = index
+                .options
+                .as_ref()
+                .and_then(|options| options.name.as_deref())
+                .unwrap_or("content_id_1");
+
+            if is_unique {
+                has_unique_content_id_index = true;
+                continue;
+            }
+
+            collection
+                .drop_index(name, None)
+                .await
+                .with_context(|| format!("could not drop non-unique players content_id index '{name}'"))?;
+        }
+
+        if !has_unique_content_id_index {
+            collection
+                .create_index(players_content_id_unique_index_model(), None)
+                .await
+                .context("could not create unique players content_id index")?;
+        }
+
+        Ok(())
+    }
+
+    async fn dedupe_players_by_content_id(
+        &self,
+        collection: Collection<mongodb::bson::Document>,
+    ) -> Result<()> {
+        let mut duplicates = collection
+            .aggregate(players_content_id_dedupe_pipeline(), None)
+            .await
+            .context("could not scan duplicate players by content_id")?;
+
+        while let Some(result) = duplicates.next().await {
+            let Some(duplicate) = result
+                .ok()
+                .and_then(|doc| mongodb::bson::from_document::<PlayerDuplicateGroup>(doc).ok())
+            else {
+                continue;
+            };
+            let ids_to_remove = duplicate_ids_to_remove(&duplicate);
+            if ids_to_remove.is_empty() {
+                continue;
+            }
+
+            collection
+                .delete_many(
+                    mongodb::bson::doc! {
+                        "_id": { "$in": ids_to_remove },
+                    },
+                    None,
+                )
+                .await
+                .with_context(|| {
+                    format!(
+                        "could not delete duplicate player rows for content_id {}",
+                        duplicate.content_id
+                    )
+                })?;
+        }
 
         Ok(())
     }
@@ -303,5 +446,68 @@ impl State {
         &self,
     ) -> Collection<crate::mongo::ReportParseSummaryDoc> {
         self.mongo.database("rpf").collection("report_parse_summaries")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        duplicate_ids_to_remove, players_content_id_dedupe_pipeline,
+        players_content_id_unique_index_model, PlayerDuplicateGroup,
+    };
+    use mongodb::bson::{doc, oid::ObjectId};
+
+    #[test]
+    fn identity_players_unique_index_model_marks_content_id_as_unique() {
+        let index = players_content_id_unique_index_model();
+
+        assert_eq!(index.keys.get_i32("content_id").unwrap(), 1);
+        assert_eq!(
+            index
+                .options
+                .as_ref()
+                .and_then(|options| options.unique)
+                .unwrap_or(false),
+            true
+        );
+    }
+
+    #[test]
+    fn identity_players_dedupe_pipeline_prefers_freshest_player_documents() {
+        let pipeline = players_content_id_dedupe_pipeline();
+
+        assert_eq!(pipeline.len(), 4);
+        assert_eq!(
+            pipeline[1].get_document("$sort").unwrap(),
+            &doc! {
+                "content_id": 1,
+                "identity_observed_at": -1,
+                "last_seen": -1,
+                "seen_count": -1,
+                "_id": 1,
+            }
+        );
+        assert_eq!(
+            pipeline[3].get_document("$match").unwrap(),
+            &doc! { "count": { "$gt": 1 } }
+        );
+    }
+
+    #[test]
+    fn identity_players_duplicate_cleanup_removes_all_non_winner_rows() {
+        let winner = ObjectId::new();
+        let loser_a = ObjectId::new();
+        let loser_b = ObjectId::new();
+        let group = PlayerDuplicateGroup {
+            content_id: 7007,
+            winner_id: winner,
+            duplicate_ids: vec![winner, loser_a, loser_b],
+            count: 3,
+        };
+
+        let to_remove = duplicate_ids_to_remove(&group);
+
+        assert_eq!(group.count, 3);
+        assert_eq!(to_remove, vec![loser_a, loser_b]);
     }
 }
