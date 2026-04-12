@@ -70,6 +70,96 @@ pub struct UploadablePlayer {
     pub account_id: u64,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+pub struct UploadableCharacterIdentity {
+    pub content_id: u64,
+    pub name: String,
+    pub home_world: u16,
+    #[serde(default)]
+    pub world_name: String,
+    #[serde(default)]
+    pub source: String,
+    pub observed_at: DateTime<Utc>,
+}
+
+#[derive(Debug, Clone)]
+pub struct IdentityMergeResult {
+    pub player: Player,
+    pub identity_observed_at: DateTime<Utc>,
+    pub world_name: String,
+    pub source: String,
+    pub applied_incoming_identity: bool,
+}
+
+pub fn merge_identity_into_player(
+    existing: Option<&Player>,
+    existing_identity_observed_at: Option<DateTime<Utc>>,
+    identity: &UploadableCharacterIdentity,
+    now: DateTime<Utc>,
+) -> IdentityMergeResult {
+    match existing {
+        Some(existing) => {
+            let freshness_cutoff = existing_identity_observed_at.unwrap_or(existing.last_seen);
+            let missing_identity = existing.name.trim().is_empty() || existing.home_world == 0;
+            let should_apply_incoming =
+                missing_identity || identity.observed_at >= freshness_cutoff;
+
+            let player = if should_apply_incoming {
+                Player {
+                    content_id: existing.content_id,
+                    name: identity.name.clone(),
+                    home_world: identity.home_world,
+                    current_world: if existing.current_world != 0 {
+                        existing.current_world
+                    } else {
+                        identity.home_world
+                    },
+                    last_seen: existing.last_seen,
+                    seen_count: existing.seen_count,
+                    account_id: existing.account_id.clone(),
+                }
+            } else {
+                existing.clone()
+            };
+
+            IdentityMergeResult {
+                player,
+                identity_observed_at: if should_apply_incoming {
+                    identity.observed_at
+                } else {
+                    freshness_cutoff
+                },
+                world_name: if should_apply_incoming {
+                    identity.world_name.clone()
+                } else {
+                    String::new()
+                },
+                source: if should_apply_incoming {
+                    identity.source.clone()
+                } else {
+                    String::new()
+                },
+                applied_incoming_identity: should_apply_incoming,
+            }
+        }
+        None => IdentityMergeResult {
+            player: Player {
+                content_id: identity.content_id,
+                name: identity.name.clone(),
+                home_world: identity.home_world,
+                current_world: identity.home_world,
+                last_seen: now,
+                seen_count: 0,
+                account_id: default_account_id(),
+            },
+            identity_observed_at: identity.observed_at,
+            world_name: identity.world_name.clone(),
+            source: identity.source.clone(),
+            applied_incoming_identity: true,
+        },
+    }
+}
+
 impl From<UploadablePlayer> for Player {
     fn from(value: UploadablePlayer) -> Self {
         Self {

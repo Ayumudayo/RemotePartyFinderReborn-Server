@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::Context;
-use chrono::{TimeDelta, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::StreamExt;
 use mongodb::{
     bson::{doc, Document},
@@ -140,8 +140,25 @@ struct PreparedPlayerUpsert {
     account_id: String,
 }
 
+#[derive(Clone)]
+pub struct PreparedCharacterIdentityUpsert {
+    content_id: u64,
+    name: String,
+    home_world: u16,
+    world_name: String,
+    source: String,
+    observed_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PlayerUpsertRejectReason {
+    MissingContentId,
+    MissingName,
+    InvalidHomeWorld,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CharacterIdentityRejectReason {
     MissingContentId,
     MissingName,
     InvalidHomeWorld,
@@ -189,6 +206,31 @@ fn prepare_player_upsert(
         home_world: player.home_world,
         current_world,
         account_id,
+    })
+}
+
+pub fn prepare_character_identity_upsert(
+    identity: &crate::player::UploadableCharacterIdentity,
+) -> Result<PreparedCharacterIdentityUpsert, CharacterIdentityRejectReason> {
+    if identity.content_id == 0 {
+        return Err(CharacterIdentityRejectReason::MissingContentId);
+    }
+
+    if identity.name.trim().is_empty() {
+        return Err(CharacterIdentityRejectReason::MissingName);
+    }
+
+    if !is_valid_world_id(identity.home_world) {
+        return Err(CharacterIdentityRejectReason::InvalidHomeWorld);
+    }
+
+    Ok(PreparedCharacterIdentityUpsert {
+        content_id: identity.content_id,
+        name: identity.name.trim().to_string(),
+        home_world: identity.home_world,
+        world_name: identity.world_name.trim().to_string(),
+        source: identity.source.trim().to_string(),
+        observed_at: identity.observed_at,
     })
 }
 
@@ -318,6 +360,167 @@ pub async fn upsert_players(
     Ok(report)
 }
 
+fn get_identity_observed_at(document: &Document) -> Option<DateTime<Utc>> {
+    document
+        .get_datetime("identity_observed_at")
+        .ok()
+        .map(|value| value.to_chrono())
+}
+
+pub async fn upsert_character_identities(
+    collection: Collection<crate::player::Player>,
+    identities: &[crate::player::UploadableCharacterIdentity],
+    concurrency: usize,
+) -> anyhow::Result<PlayerUpsertReport> {
+    let mut prepared = Vec::with_capacity(identities.len());
+    let mut invalid_missing_content_id = 0usize;
+    let mut invalid_missing_name = 0usize;
+    let mut invalid_home_world = 0usize;
+
+    for identity in identities {
+        match prepare_character_identity_upsert(identity) {
+            Ok(op) => prepared.push(op),
+            Err(CharacterIdentityRejectReason::MissingContentId) => invalid_missing_content_id += 1,
+            Err(CharacterIdentityRejectReason::MissingName) => invalid_missing_name += 1,
+            Err(CharacterIdentityRejectReason::InvalidHomeWorld) => invalid_home_world += 1,
+        }
+    }
+
+    let invalid = invalid_missing_content_id + invalid_missing_name + invalid_home_world;
+    if invalid > 0 {
+        tracing::debug!(
+            requested = identities.len(),
+            invalid,
+            invalid_missing_content_id,
+            invalid_missing_name,
+            invalid_home_world,
+            "Dropped invalid character identity rows before MongoDB upsert"
+        );
+    }
+
+    let accepted = prepared.len();
+    let mut successful = 0usize;
+    let mut failed = 0usize;
+    let raw_collection = collection.clone_with_type::<Document>();
+
+    let mut writes = futures_util::stream::iter(prepared.into_iter().map(|op| {
+        let collection = collection.clone();
+        let raw_collection = raw_collection.clone();
+        async move {
+            let content_id = op.content_id;
+            let filter = doc! { "content_id": content_id as i64 };
+            let existing_doc: Option<Document> = raw_collection
+                .find_one(filter.clone(), None)
+                .await
+                .map_err(|error| (content_id, error))?;
+
+            let existing_player = existing_doc.as_ref().and_then(|document| {
+                mongodb::bson::from_document::<crate::player::Player>(document.clone()).ok()
+            });
+            let existing_identity_observed_at =
+                existing_doc.as_ref().and_then(get_identity_observed_at);
+            let incoming_identity = crate::player::UploadableCharacterIdentity {
+                content_id: op.content_id,
+                name: op.name.clone(),
+                home_world: op.home_world,
+                world_name: op.world_name.clone(),
+                source: op.source.clone(),
+                observed_at: op.observed_at,
+            };
+            let merged = crate::player::merge_identity_into_player(
+                existing_player.as_ref(),
+                existing_identity_observed_at,
+                &incoming_identity,
+                Utc::now(),
+            );
+
+            let mut set_doc = doc! {
+                "content_id": merged.player.content_id as i64,
+                "name": merged.player.name,
+                "home_world": merged.player.home_world as u32,
+                "current_world": merged.player.current_world as u32,
+                "last_seen": merged.player.last_seen,
+                "seen_count": merged.player.seen_count as u32,
+                "account_id": merged.player.account_id,
+                "identity_observed_at": merged.identity_observed_at,
+            };
+
+            if merged.applied_incoming_identity {
+                set_doc.insert("world_name", merged.world_name);
+                set_doc.insert(
+                    "identity_source",
+                    if merged.source.trim().is_empty() {
+                        "unknown".to_string()
+                    } else {
+                        merged.source
+                    },
+                );
+            }
+
+            collection
+                .update_one(
+                    filter,
+                    doc! {
+                        "$set": set_doc,
+                        "$setOnInsert": {
+                            "content_id": content_id as i64,
+                        },
+                    },
+                    UpdateOptions::builder().upsert(true).build(),
+                )
+                .await
+                .map_err(|error| (content_id, error))
+        }
+    }))
+    .buffer_unordered(concurrency.max(1));
+
+    while let Some(result) = writes.next().await {
+        match result {
+            Ok(_) => {
+                successful += 1;
+            }
+            Err((content_id, error)) => {
+                failed += 1;
+                tracing::error!(
+                    content_id,
+                    error = ?error,
+                    "MongoDB character identity upsert failed"
+                );
+            }
+        }
+    }
+
+    let report = PlayerUpsertReport {
+        requested: identities.len(),
+        accepted,
+        updated: successful,
+        invalid,
+        failed,
+    };
+
+    if report.failed == 0 {
+        tracing::debug!(
+            requested = report.requested,
+            accepted = report.accepted,
+            updated = report.updated,
+            invalid = report.invalid,
+            failed = report.failed,
+            "MongoDB character identity upsert batch completed"
+        );
+    } else {
+        tracing::warn!(
+            requested = report.requested,
+            accepted = report.accepted,
+            updated = report.updated,
+            invalid = report.invalid,
+            failed = report.failed,
+            "MongoDB character identity upsert batch completed with write failures"
+        );
+    }
+
+    Ok(report)
+}
+
 pub async fn get_players_by_content_ids(
     collection: Collection<crate::player::Player>,
     content_ids: &[u64],
@@ -358,16 +561,10 @@ pub async fn get_all_active_players(
 }
 
 pub use crate::fflogs::cache::{
-    is_zone_cache_expired,
-    is_zone_cache_expired_with_hidden_ttl_hours,
-    EncounterParse,
-    ParseCacheDoc,
-    ZoneCache,
+    is_zone_cache_expired, is_zone_cache_expired_with_hidden_ttl_hours, EncounterParse,
+    ParseCacheDoc, ZoneCache,
 };
-pub use crate::report_parse::{
-    ReportParseIdentityKey,
-    ReportParseSummaryDoc,
-};
+pub use crate::report_parse::{ReportParseIdentityKey, ReportParseSummaryDoc};
 
 pub async fn get_zone_cache(
     collection: Collection<ParseCacheDoc>,

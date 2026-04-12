@@ -1,34 +1,35 @@
+use chrono::{TimeDelta, Utc};
+use futures_util::StreamExt;
+use mongodb::{
+    bson::{doc, Document},
+    options::UpdateOptions,
+};
 use std::{
     cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet},
     convert::Infallible,
     net::SocketAddr,
-    sync::{
-        Arc,
-        atomic::Ordering as AtomicOrdering,
-    },
+    sync::{atomic::Ordering as AtomicOrdering, Arc},
 };
-use warp::{
-    Reply,
-    http::{HeaderMap, StatusCode},
-};
-use futures_util::StreamExt;
-use mongodb::{bson::{doc, Document}, options::UpdateOptions};
-use chrono::{TimeDelta, Utc};
 use uuid::Uuid;
+use warp::{
+    http::{HeaderMap, StatusCode},
+    Reply,
+};
 
 use crate::listing::PartyFinderListing;
 
-use crate::mongo::{get_current_listings, insert_listing, upsert_players, get_players_by_content_ids, get_parse_docs, ParseCacheDoc};
-use crate::player::UploadablePlayer;
+use super::ingest_guard::{self, CapabilityClaims, CapabilityScope, IngestEndpoint};
+use super::{State, FFLOGS_LEASE_TTL_MINUTES};
+use crate::mongo::{
+    get_current_listings, get_parse_docs, get_players_by_content_ids, insert_listing,
+    upsert_character_identities, upsert_players, ParseCacheDoc,
+};
+use crate::player::{UploadableCharacterIdentity, UploadablePlayer};
 use crate::sestring_ext::SeStringExt;
 use crate::{
-    ffxiv::Language,
-    template::listings::ListingsTemplate,
-    template::stats::StatsTemplate,
+    ffxiv::Language, template::listings::ListingsTemplate, template::stats::StatsTemplate,
 };
-use super::{State, FFLOGS_LEASE_TTL_MINUTES};
-use super::ingest_guard::{self, CapabilityClaims, CapabilityScope, IngestEndpoint};
 
 fn resolve_member_player(
     players: &HashMap<u64, crate::player::Player>,
@@ -94,7 +95,10 @@ fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer>
     world_ids.sort_unstable();
 
     let (anchor_dc, anchor_region) = match crate::ffxiv::WORLDS.get(&(anchor_world_id as u32)) {
-        Some(w) => (Some(w.data_center()), crate::fflogs::get_region_from_server(w.as_str())),
+        Some(w) => (
+            Some(w.data_center()),
+            crate::fflogs::get_region_from_server(w.as_str()),
+        ),
         None => (None, "NA"),
     };
 
@@ -103,7 +107,9 @@ fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer>
 
     if let Some(dc) = anchor_dc {
         for wid in &world_ids {
-            let Some(w) = crate::ffxiv::WORLDS.get(wid) else { continue };
+            let Some(w) = crate::ffxiv::WORLDS.get(wid) else {
+                continue;
+            };
             if w.data_center() != dc {
                 continue;
             }
@@ -119,7 +125,9 @@ fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer>
     }
 
     for wid in &world_ids {
-        let Some(w) = crate::ffxiv::WORLDS.get(wid) else { continue };
+        let Some(w) = crate::ffxiv::WORLDS.get(wid) else {
+            continue;
+        };
         let server = w.as_str().to_string();
         let region = crate::fflogs::get_region_from_server(&server);
         if region != anchor_region {
@@ -144,7 +152,9 @@ fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer>
 /// - Hidden 처리
 fn lookup_fflogs_displays(
     parse_docs: &HashMap<u64, ParseCacheDoc>,
-    report_parse_summaries: Option<&HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>>,
+    report_parse_summaries: Option<
+        &HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>,
+    >,
     content_id: u64,
     fallback_name: Option<&str>,
     fallback_home_world: Option<u16>,
@@ -162,9 +172,9 @@ fn lookup_fflogs_displays(
             .or_else(|| legacy_zone_key.and_then(|key| doc.zones.get(key)))
     });
     let fallback_summary = match (report_parse_summaries, fallback_name, fallback_home_world) {
-        (Some(summaries), Some(name), Some(home_world)) if home_world != 0 => summaries.get(
-            &crate::mongo::ReportParseIdentityKey::new(name, home_world),
-        ),
+        (Some(summaries), Some(name), Some(home_world)) if home_world != 0 => {
+            summaries.get(&crate::mongo::ReportParseIdentityKey::new(name, home_world))
+        }
         _ => None,
     };
     let resolved = crate::parse_resolver::resolve_parse_data(
@@ -210,13 +220,19 @@ pub async fn listings_handler(
         Ok(mut containers) => {
             // 단일 정렬로 통합: updated_minute DESC → pf_category DESC → time_left ASC
             containers.sort_by(|a, b| {
-                b.updated_minute.cmp(&a.updated_minute)
+                b.updated_minute
+                    .cmp(&a.updated_minute)
                     .then_with(|| b.listing.pf_category().cmp(&a.listing.pf_category()))
-                    .then_with(|| a.time_left.partial_cmp(&b.time_left).unwrap_or(CmpOrdering::Equal))
+                    .then_with(|| {
+                        a.time_left
+                            .partial_cmp(&b.time_left)
+                            .unwrap_or(CmpOrdering::Equal)
+                    })
             });
 
             // Collect all member IDs + leader IDs
-            let mut all_content_ids: Vec<u64> = containers.iter()
+            let mut all_content_ids: Vec<u64> = containers
+                .iter()
                 .flat_map(|l| {
                     let member_ids = l.listing.member_content_ids.iter().map(|&id| id as u64);
                     let leader_id = std::iter::once(l.listing.leader_content_id);
@@ -226,15 +242,25 @@ pub async fn listings_handler(
                 .collect();
             all_content_ids.sort_unstable();
             all_content_ids.dedup();
-            
+
             // Fetch players
-            let players_list = get_players_by_content_ids(state.players_collection(), &all_content_ids).await.unwrap_or_default();
-            let players: HashMap<u64, crate::player::Player> = players_list.into_iter().map(|p| (p.content_id, p)).collect();
+            let players_list =
+                get_players_by_content_ids(state.players_collection(), &all_content_ids)
+                    .await
+                    .unwrap_or_default();
+            let players: HashMap<u64, crate::player::Player> = players_list
+                .into_iter()
+                .map(|p| (p.content_id, p))
+                .collect();
 
             // Optimisation: Pre-fetch all parse docs for all visible players
-            let all_parse_docs = get_parse_docs(state.parse_collection(), &all_content_ids).await.unwrap_or_default();
-            let mut report_parse_requests: HashMap<String, Vec<crate::mongo::ReportParseIdentityKey>> =
-                HashMap::new();
+            let all_parse_docs = get_parse_docs(state.parse_collection(), &all_content_ids)
+                .await
+                .unwrap_or_default();
+            let mut report_parse_requests: HashMap<
+                String,
+                Vec<crate::mongo::ReportParseIdentityKey>,
+            > = HashMap::new();
 
             for container in &containers {
                 let duty_id = container.listing.duty as u16;
@@ -321,21 +347,22 @@ pub async fn listings_handler(
                 } else {
                     None
                 };
-                
-                let (zone_id, difficulty_id, partition, encounter_id, secondary_encounter_id) = if let Some(info) = fflogs_info {
-                    (
-                        info.zone_id,
-                        info.difficulty_id.unwrap_or(0) as i32,
-                        crate::fflogs::mapping::FFLOGS_ZONES
-                            .get(&info.zone_id)
-                            .map(|z| z.partition)
-                            .unwrap_or(0) as i32,
-                        info.encounter_id,
-                        info.secondary_encounter_id,
-                    )
-                } else {
-                    (0, 0, 0, 0, None)
-                };
+
+                let (zone_id, difficulty_id, partition, encounter_id, secondary_encounter_id) =
+                    if let Some(info) = fflogs_info {
+                        (
+                            info.zone_id,
+                            info.difficulty_id.unwrap_or(0) as i32,
+                            crate::fflogs::mapping::FFLOGS_ZONES
+                                .get(&info.zone_id)
+                                .map(|z| z.partition)
+                                .unwrap_or(0) as i32,
+                            info.encounter_id,
+                            info.secondary_encounter_id,
+                        )
+                    } else {
+                        (0, 0, 0, 0, None)
+                    };
 
                 let jobs = &container.listing.jobs_present;
                 let detail_jobs = &container.listing.member_jobs;
@@ -344,13 +371,15 @@ pub async fn listings_handler(
                 let alliance_like = container.listing.num_parties >= 3
                     || content_ids.len() > 8
                     || detail_jobs.len() > 8;
-                 
-                let zone_key = crate::fflogs::make_zone_cache_key(zone_id, difficulty_id, partition);
+
+                let zone_key =
+                    crate::fflogs::make_zone_cache_key(zone_id, difficulty_id, partition);
                 let legacy_zone_key = zone_id.to_string();
 
                 let mut listing_leader_fallback_hits = 0usize;
                 let mut emitted_party_headers: HashSet<u8> = HashSet::new();
-                let members: Vec<crate::template::listings::RenderableMember> = content_ids.iter()
+                let members: Vec<crate::template::listings::RenderableMember> = content_ids
+                    .iter()
                     .enumerate()
                     .filter(|(_, id)| **id != 0) // 빈 슬롯 제외
                     .filter_map(|(i, id)| {
@@ -374,7 +403,7 @@ pub async fn listings_handler(
                         if used_leader_fallback {
                             listing_leader_fallback_hits += 1;
                         }
-                        
+
                         let (parse, progress) = if zone_id > 0 {
                             lookup_fflogs_displays(
                                 &all_parse_docs,
@@ -389,29 +418,22 @@ pub async fn listings_handler(
                             )
                         } else {
                             (
-                                 crate::template::listings::ParseDisplay::new(
-                                     None,
-                                     "parse-none".to_string(),
-                                     None,
-                                     "parse-none".to_string(),
-                                     false,
-                                     false,
-                                     false,
-                                     false,
-                                     crate::parse_resolver::ParseSource::None,
-                                 ),
-                                 crate::template::listings::ProgressDisplay::new(
-                                     None,
-                                     None,
-                                     None,
-                                     None,
-                                     None,
-                                     None,
-                                     false,
-                                     false,
-                                 ),
-                             )
-                         };
+                                crate::template::listings::ParseDisplay::new(
+                                    None,
+                                    "parse-none".to_string(),
+                                    None,
+                                    "parse-none".to_string(),
+                                    false,
+                                    false,
+                                    false,
+                                    false,
+                                    crate::parse_resolver::ParseSource::None,
+                                ),
+                                crate::template::listings::ProgressDisplay::new(
+                                    None, None, None, None, None, None, false, false,
+                                ),
+                            )
+                        };
 
                         Some(crate::template::listings::RenderableMember {
                             job_id,
@@ -420,7 +442,9 @@ pub async fn listings_handler(
                             progress,
                             slot_index: i,
                             party_index,
-                            party_header: if alliance_like && emitted_party_headers.insert(party_index) {
+                            party_header: if alliance_like
+                                && emitted_party_headers.insert(party_index)
+                            {
                                 Some(alliance_party_label(party_index))
                             } else {
                                 None
@@ -440,7 +464,7 @@ pub async fn listings_handler(
                         "members: applied leader metadata fallback",
                     );
                 }
-                
+
                 // 파티장 로그 계산 (leader_content_id 사용) - 헬퍼 함수 사용
                 let leader_content_id = container.listing.leader_content_id;
                 let (leader_parse, _) = if zone_id > 0 && leader_content_id != 0 {
@@ -457,29 +481,22 @@ pub async fn listings_handler(
                     )
                 } else {
                     (
-                         crate::template::listings::ParseDisplay::new(
-                             None,
-                             "parse-none".to_string(),
-                             None,
-                             "parse-none".to_string(),
-                             false,
-                             false,
-                             false,
-                             false,
-                             crate::parse_resolver::ParseSource::None,
-                         ),
-                         crate::template::listings::ProgressDisplay::new(
-                             None,
-                             None,
-                             None,
-                             None,
-                             None,
-                             None,
-                             false,
-                             false,
-                         ),
-                     )
-                 };
+                        crate::template::listings::ParseDisplay::new(
+                            None,
+                            "parse-none".to_string(),
+                            None,
+                            "parse-none".to_string(),
+                            false,
+                            false,
+                            false,
+                            false,
+                            crate::parse_resolver::ParseSource::None,
+                        ),
+                        crate::template::listings::ProgressDisplay::new(
+                            None, None, None, None, None, None, false, false,
+                        ),
+                    )
+                };
 
                 renderable_containers.push(crate::template::listings::RenderableListing {
                     container,
@@ -503,7 +520,10 @@ pub async fn listings_handler(
                 );
             }
 
-            ListingsTemplate { containers: renderable_containers, lang }
+            ListingsTemplate {
+                containers: renderable_containers,
+                lang,
+            }
         }
         Err(e) => {
             tracing::error!("Failed to get listings: {:#?}", e);
@@ -530,7 +550,8 @@ pub async fn stats_handler(
                 stats.all_time
             },
             lang,
-        }.into_response(),
+        }
+        .into_response(),
         None => "Stats haven't been calculated yet. Please wait :(".into_response(),
     })
 }
@@ -574,7 +595,9 @@ fn is_listing_acceptable(listing: &PartyFinderListing) -> bool {
     listing.created_world < 1_000 && listing.home_world < 1_000 && listing.current_world < 1_000
 }
 
-fn build_listing_upsert(listing: &PartyFinderListing) -> anyhow::Result<(u32, Document, Vec<Document>)> {
+fn build_listing_upsert(
+    listing: &PartyFinderListing,
+) -> anyhow::Result<(u32, Document, Vec<Document>)> {
     let mut listing_doc = mongodb::bson::to_document(listing)?;
     listing_doc.remove("member_content_ids");
     listing_doc.remove("member_jobs");
@@ -648,17 +671,22 @@ pub async fn contribute_multiple_handler(
     let mut successful = 0usize;
     let mut failed_writes = 0usize;
     let mut successful_listing_ids = Vec::with_capacity(upsert_total);
-    let mut writes = futures_util::stream::iter(upserts.into_iter().map(|(listing_id, filter, update)| {
-        let collection = state.collection();
-        async move {
-            collection
-                .update_one(filter, update, UpdateOptions::builder().upsert(true).build())
-                .await
-                .map(|_| listing_id)
-                .map_err(|error| (listing_id, error))
-        }
-    }))
-    .buffer_unordered(state.listing_upsert_concurrency);
+    let mut writes =
+        futures_util::stream::iter(upserts.into_iter().map(|(listing_id, filter, update)| {
+            let collection = state.collection();
+            async move {
+                collection
+                    .update_one(
+                        filter,
+                        update,
+                        UpdateOptions::builder().upsert(true).build(),
+                    )
+                    .await
+                    .map(|_| listing_id)
+                    .map_err(|error| (listing_id, error))
+            }
+        }))
+        .buffer_unordered(state.listing_upsert_concurrency);
 
     while let Some(write_result) = writes.next().await {
         match write_result {
@@ -690,7 +718,11 @@ pub async fn contribute_multiple_handler(
         accepted: upsert_total,
         updated: successful,
         failed: failed_writes,
-        detail_capabilities: issue_detail_capabilities(&state, &guard_ctx.client_id, &successful_listing_ids),
+        detail_capabilities: issue_detail_capabilities(
+            &state,
+            &guard_ctx.client_id,
+            &successful_listing_ids,
+        ),
         protected_endpoints: issue_protected_endpoint_capabilities(&state, &guard_ctx.client_id),
     };
     Ok(warp::reply::json(&response).into_response())
@@ -718,7 +750,11 @@ pub async fn contribute_players_handler(
 
     let total = players.len();
     if total > state.max_players_batch_size {
-        return Ok(warp::reply::with_status("too many players in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+        return Ok(warp::reply::with_status(
+            "too many players in request",
+            StatusCode::PAYLOAD_TOO_LARGE,
+        )
+        .into_response());
     }
 
     let result = upsert_players(
@@ -790,7 +826,10 @@ pub async fn contribute_players_handler(
                 updated: report.updated,
                 invalid: report.invalid,
                 failed: report.failed,
-                protected_endpoints: issue_protected_endpoint_capabilities(&state, &guard_ctx.client_id),
+                protected_endpoints: issue_protected_endpoint_capabilities(
+                    &state,
+                    &guard_ctx.client_id,
+                ),
             };
 
             Ok(warp::reply::with_status(warp::reply::json(&response), status_code).into_response())
@@ -805,7 +844,141 @@ pub async fn contribute_players_handler(
                 updated: 0,
                 invalid: 0,
                 failed: total,
-                protected_endpoints: issue_protected_endpoint_capabilities(&state, &guard_ctx.client_id),
+                protected_endpoints: issue_protected_endpoint_capabilities(
+                    &state,
+                    &guard_ctx.client_id,
+                ),
+            };
+
+            Ok(warp::reply::with_status(
+                warp::reply::json(&response),
+                StatusCode::INTERNAL_SERVER_ERROR,
+            )
+            .into_response())
+        }
+    }
+}
+
+pub async fn contribute_character_identity_handler(
+    state: Arc<State>,
+    headers: HeaderMap,
+    remote_addr: Option<SocketAddr>,
+    identities: Vec<UploadableCharacterIdentity>,
+) -> std::result::Result<warp::reply::Response, Infallible> {
+    let guard_ctx = match ingest_guard::authorize_request(
+        &state,
+        IngestEndpoint::ContributePlayers,
+        &headers,
+        remote_addr,
+        "POST",
+        "/contribute/character-identity",
+    )
+    .await
+    {
+        Ok(ctx) => ctx,
+        Err(error) => return Ok(ingest_guard::guard_error_reply(error)),
+    };
+
+    let total = identities.len();
+    if total > state.max_players_batch_size {
+        return Ok(warp::reply::with_status(
+            "too many character identities in request",
+            StatusCode::PAYLOAD_TOO_LARGE,
+        )
+        .into_response());
+    }
+
+    let result = upsert_character_identities(
+        state.players_collection(),
+        &identities,
+        state.player_upsert_concurrency,
+    )
+    .await;
+
+    #[derive(Debug, serde::Serialize)]
+    struct ContributeCharacterIdentityResponse {
+        status: &'static str,
+        requested: usize,
+        accepted: usize,
+        updated: usize,
+        invalid: usize,
+        failed: usize,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        protected_endpoints: Option<ProtectedEndpointCapabilities>,
+    }
+
+    match result {
+        Ok(report) => {
+            let (status_code, status) = if report.requested == 0 {
+                (StatusCode::OK, "empty")
+            } else if report.failed > 0 {
+                (StatusCode::INTERNAL_SERVER_ERROR, "write_failure")
+            } else if report.invalid > 0 {
+                (StatusCode::BAD_REQUEST, "invalid_payload")
+            } else {
+                (StatusCode::OK, "ok")
+            };
+
+            if status_code == StatusCode::OK {
+                tracing::debug!(
+                    requested = report.requested,
+                    accepted = report.accepted,
+                    updated = report.updated,
+                    invalid = report.invalid,
+                    failed = report.failed,
+                    "Processed /contribute/character-identity request"
+                );
+            } else if status == "write_failure" {
+                tracing::warn!(
+                    requested = report.requested,
+                    accepted = report.accepted,
+                    updated = report.updated,
+                    invalid = report.invalid,
+                    failed = report.failed,
+                    status,
+                    "Processed /contribute/character-identity request with issues"
+                );
+            } else {
+                tracing::debug!(
+                    requested = report.requested,
+                    accepted = report.accepted,
+                    updated = report.updated,
+                    invalid = report.invalid,
+                    failed = report.failed,
+                    status,
+                    "Processed /contribute/character-identity request with issues"
+                );
+            }
+
+            let response = ContributeCharacterIdentityResponse {
+                status,
+                requested: report.requested,
+                accepted: report.accepted,
+                updated: report.updated,
+                invalid: report.invalid,
+                failed: report.failed,
+                protected_endpoints: issue_protected_endpoint_capabilities(
+                    &state,
+                    &guard_ctx.client_id,
+                ),
+            };
+
+            Ok(warp::reply::with_status(warp::reply::json(&response), status_code).into_response())
+        }
+        Err(error) => {
+            tracing::error!("error upserting character identities: {:#?}", error);
+
+            let response = ContributeCharacterIdentityResponse {
+                status: "error",
+                requested: total,
+                accepted: 0,
+                updated: 0,
+                invalid: 0,
+                failed: total,
+                protected_endpoints: issue_protected_endpoint_capabilities(
+                    &state,
+                    &guard_ctx.client_id,
+                ),
             };
 
             Ok(warp::reply::with_status(
@@ -916,7 +1089,11 @@ fn issue_capability(
     match ingest_guard::issue_capability_token(&state.ingest_security.capability_secret, &claims) {
         Ok(token) => Some(ProtectedEndpointCapability { token, expires_at }),
         Err(error) => {
-            tracing::warn!(?scope, ?error, "failed to issue protected endpoint capability");
+            tracing::warn!(
+                ?scope,
+                ?error,
+                "failed to issue protected endpoint capability"
+            );
             None
         }
     }
@@ -928,7 +1105,13 @@ fn issue_protected_endpoint_capabilities(
 ) -> Option<ProtectedEndpointCapabilities> {
     let expires_at = Utc::now().timestamp() + state.ingest_security.capability_session_ttl_seconds;
     Some(ProtectedEndpointCapabilities {
-        fflogs_jobs: issue_capability(state, client_id, CapabilityScope::FflogsJobs, None, expires_at)?,
+        fflogs_jobs: issue_capability(
+            state,
+            client_id,
+            CapabilityScope::FflogsJobs,
+            None,
+            expires_at,
+        )?,
         fflogs_results: issue_capability(
             state,
             client_id,
@@ -980,7 +1163,10 @@ fn issue_detail_capabilities(
     issued
 }
 
-fn detail_payload_is_too_large(detail: &UploadablePartyDetail, limit: usize) -> Option<&'static str> {
+fn detail_payload_is_too_large(
+    detail: &UploadablePartyDetail,
+    limit: usize,
+) -> Option<&'static str> {
     if detail.member_content_ids.len() > limit {
         return Some("too many members in request");
     }
@@ -1288,7 +1474,7 @@ pub async fn contribute_fflogs_jobs_handler(
 
     // Zone별 플레이어 수집, background.rs 로직 재사용
     // 여기서는 간단하게 순회하며 필요한 작업 찾으면 바로 반환 (Greedy)
-    
+
     // Shuffle listings to distribute load? (Optional, maybe later)
 
     for container in listings {
@@ -1311,26 +1497,29 @@ pub async fn contribute_fflogs_jobs_handler(
             .get(&fflogs_info.zone_id)
             .map(|z| z.partition)
             .unwrap_or(0) as i32;
-        let zone_key = crate::fflogs::make_zone_cache_key(fflogs_info.zone_id, difficulty_id, partition);
+        let zone_key =
+            crate::fflogs::make_zone_cache_key(fflogs_info.zone_id, difficulty_id, partition);
 
-        let member_ids: Vec<u64> = container.listing.member_content_ids.iter()
+        let member_ids: Vec<u64> = container
+            .listing
+            .member_content_ids
+            .iter()
             .map(|&id| id as u64)
             .filter(|&id| id != 0)
             .collect();
 
         if member_ids.is_empty() {
-             continue;
+            continue;
         }
 
         // 캐시 확인 (Batch)
-        let cached_zones = match crate::mongo::get_zone_caches(
-            state.parse_collection(),
-            &member_ids,
-            &zone_key,
-        ).await {
-            Ok(map) => map,
-            Err(_) => continue,
-        };
+        let cached_zones =
+            match crate::mongo::get_zone_caches(state.parse_collection(), &member_ids, &zone_key)
+                .await
+            {
+                Ok(map) => map,
+                Err(_) => continue,
+            };
 
         // 작업이 필요한 멤버 식별
         let mut needing_fetch = Vec::new();
@@ -1358,10 +1547,11 @@ pub async fn contribute_fflogs_jobs_handler(
         }
 
         // 플레이어 정보 조회 (이름/서버)
-        let players = match get_players_by_content_ids(state.players_collection(), &needing_fetch).await {
-            Ok(p) => p,
-            Err(_) => continue,
-        };
+        let players =
+            match get_players_by_content_ids(state.players_collection(), &needing_fetch).await {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
 
         // 홈월드가 없는 플레이어를 위한 후보 서버 목록(리스트 단위)
         let listing_anchor_world = [
@@ -1385,7 +1575,9 @@ pub async fn contribute_fflogs_jobs_handler(
             }
 
             let home_world_known = player.home_world != 0
-                && crate::ffxiv::WORLDS.get(&(player.home_world as u32)).is_some();
+                && crate::ffxiv::WORLDS
+                    .get(&(player.home_world as u32))
+                    .is_some();
 
             let (server, region, candidate_servers) = if home_world_known {
                 let server = player.home_world_name().to_string();
@@ -1394,7 +1586,9 @@ pub async fn contribute_fflogs_jobs_handler(
             } else {
                 // 홈월드를 모르면: 현재 월드/리스트(데이터센터)를 앵커로 후보 서버를 구성하고, 플러그인이 추정 매칭을 수행
                 let anchor_world = if player.current_world != 0
-                    && crate::ffxiv::WORLDS.get(&(player.current_world as u32)).is_some()
+                    && crate::ffxiv::WORLDS
+                        .get(&(player.current_world as u32))
+                        .is_some()
                 {
                     player.current_world
                 } else {
@@ -1415,7 +1609,7 @@ pub async fn contribute_fflogs_jobs_handler(
                 let region = candidates[0].region.clone();
                 (server, region, candidates)
             };
-            
+
             jobs.push(ParseJob {
                 content_id: player.content_id as u64,
                 name: player.name,
@@ -1466,11 +1660,14 @@ pub async fn contribute_fflogs_jobs_handler(
             }
 
             let lease_token = Uuid::new_v4().to_string();
-            leases.insert(key, super::FflogsLeaseEntry {
-                leased_at: now,
-                client_id: guard_ctx.client_id.clone(),
-                lease_token: lease_token.clone(),
-            });
+            leases.insert(
+                key,
+                super::FflogsLeaseEntry {
+                    leased_at: now,
+                    client_id: guard_ctx.client_id.clone(),
+                    lease_token: lease_token.clone(),
+                },
+            );
 
             job.lease_token = lease_token;
             leased_jobs.push(job);
@@ -1541,7 +1738,11 @@ pub async fn contribute_fflogs_results_handler(
 
     let submitted_results_total = results.len();
     if submitted_results_total > state.max_fflogs_results_batch_size {
-        return Ok(warp::reply::with_status("too many FFLogs results in request", StatusCode::PAYLOAD_TOO_LARGE).into_response());
+        return Ok(warp::reply::with_status(
+            "too many FFLogs results in request",
+            StatusCode::PAYLOAD_TOO_LARGE,
+        )
+        .into_response());
     }
 
     let mut accepted_results = Vec::with_capacity(submitted_results_total);
@@ -1584,10 +1785,7 @@ pub async fn contribute_fflogs_results_handler(
         let mut encounter_map = HashMap::new();
 
         for (enc_id, percentile) in res.encounters {
-            let boss_percentage = boss_percentages
-                .get(&enc_id)
-                .copied()
-                .map(|v| v as f32);
+            let boss_percentage = boss_percentages.get(&enc_id).copied().map(|v| v as f32);
             let clear_count = clear_counts
                 .get(&enc_id)
                 .copied()
@@ -1635,15 +1833,18 @@ pub async fn contribute_fflogs_results_handler(
             encounters: encounter_map,
         };
 
-        let zone_key = crate::fflogs::make_zone_cache_key(res.zone_id, res.difficulty_id, res.partition);
+        let zone_key =
+            crate::fflogs::make_zone_cache_key(res.zone_id, res.difficulty_id, res.partition);
 
         // DB Upsert
         if let Ok(_) = crate::mongo::upsert_zone_cache(
             state.parse_collection(),
             res.content_id,
             &zone_key,
-            &zone_cache
-        ).await {
+            &zone_cache,
+        )
+        .await
+        {
             success_count += 1;
         }
     }
@@ -1829,7 +2030,63 @@ mod tests {
         UploadablePartyDetail,
     };
     use chrono::Utc;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, sync::Arc};
+    use warp::http::{HeaderMap, StatusCode};
+
+    async fn test_state_with_signature_required() -> Arc<crate::web::State> {
+        let mongo = mongodb::Client::with_uri_str("mongodb://127.0.0.1:27017")
+            .await
+            .expect("construct test mongo client");
+        let (tx, _) = tokio::sync::broadcast::channel(1);
+
+        Arc::new(crate::web::State {
+            mongo,
+            stats: Default::default(),
+            listings_channel: tx,
+            fflogs_jobs_limit: 1,
+            fflogs_hidden_cache_ttl_hours: 24,
+            listing_upsert_concurrency: 1,
+            player_upsert_concurrency: 1,
+            max_body_bytes_contribute: 1024,
+            max_body_bytes_multiple: 1024,
+            max_body_bytes_players: 1024,
+            max_body_bytes_detail: 1024,
+            max_body_bytes_fflogs_results: 1024,
+            max_multiple_batch_size: 10,
+            max_players_batch_size: 10,
+            max_fflogs_results_batch_size: 10,
+            max_detail_member_count: 8,
+            ingest_security: crate::web::IngestSecurityConfig {
+                require_signature: true,
+                shared_secret: "test-shared-secret".to_string(),
+                clock_skew_seconds: 300,
+                nonce_ttl_seconds: 300,
+                require_capabilities_for_protected_endpoints: true,
+                capability_secret: "test-capability-secret".to_string(),
+                capability_session_ttl_seconds: 300,
+                capability_detail_ttl_seconds: 300,
+                rate_limits: crate::web::IngestRateLimits {
+                    contribute_per_minute: 60,
+                    multiple_per_minute: 60,
+                    players_per_minute: 60,
+                    detail_per_minute: 60,
+                    fflogs_jobs_per_minute: 60,
+                    fflogs_results_per_minute: 60,
+                },
+            },
+            ingest_rate_windows: Default::default(),
+            ingest_nonces: Default::default(),
+            fflogs_job_leases: Default::default(),
+            fflogs_jobs_dispatched_total: Default::default(),
+            fflogs_results_received_total: Default::default(),
+            fflogs_results_rejected_total: Default::default(),
+            fflogs_leases_abandoned_total: Default::default(),
+            fflogs_leases_abandon_rejected_total: Default::default(),
+            fflogs_hidden_refresh_total: Default::default(),
+            fflogs_leader_fallback_total: Default::default(),
+            monitor_snapshot_interval_seconds: 0,
+        })
+    }
 
     #[test]
     fn resolve_member_player_uses_existing_player_when_present() {
@@ -1925,5 +2182,127 @@ mod tests {
             detail_payload_is_too_large(&detail, 3),
             Some("too many slot flags in request")
         );
+    }
+
+    #[test]
+    fn identity_endpoint_rejects_empty_name_or_invalid_world() {
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+
+        let empty_name = crate::player::UploadableCharacterIdentity {
+            content_id: 4001,
+            name: "   ".to_string(),
+            home_world: 74,
+            world_name: "Tonberry".to_string(),
+            source: "chara_card".to_string(),
+            observed_at,
+        };
+        let invalid_world = crate::player::UploadableCharacterIdentity {
+            content_id: 4002,
+            name: "Alpha Beta".to_string(),
+            home_world: 4_000,
+            world_name: "Nowhere".to_string(),
+            source: "chara_card".to_string(),
+            observed_at,
+        };
+
+        assert!(matches!(
+            crate::mongo::prepare_character_identity_upsert(&empty_name),
+            Err(crate::mongo::CharacterIdentityRejectReason::MissingName)
+        ));
+        assert!(matches!(
+            crate::mongo::prepare_character_identity_upsert(&invalid_world),
+            Err(crate::mongo::CharacterIdentityRejectReason::InvalidHomeWorld)
+        ));
+    }
+
+    #[test]
+    fn identity_upsert_updates_player_lookup_used_by_listing_render() {
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let now = observed_at + chrono::TimeDelta::minutes(1);
+        let identity = crate::player::UploadableCharacterIdentity {
+            content_id: 5150,
+            name: "Resolved Member".to_string(),
+            home_world: 74,
+            world_name: "Tonberry".to_string(),
+            source: "chara_card".to_string(),
+            observed_at,
+        };
+
+        let merged = crate::player::merge_identity_into_player(None, None, &identity, now);
+        let mut players = HashMap::new();
+        players.insert(merged.player.content_id, merged.player.clone());
+
+        let (player, used_fallback) =
+            resolve_member_player(&players, identity.content_id, false, "Leader", 79, 79);
+
+        assert!(merged.applied_incoming_identity);
+        assert!(!used_fallback);
+        assert_eq!(player.name, "Resolved Member");
+        assert_eq!(player.home_world, 74);
+    }
+
+    #[test]
+    fn identity_upsert_preserves_newer_existing_player_data_when_enrichment_is_stale() {
+        let existing_observed_at = chrono::DateTime::parse_from_rfc3339("2026-04-12T13:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let stale_observed_at = chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let existing = crate::player::Player {
+            content_id: 6006,
+            name: "Fresh Name".to_string(),
+            home_world: 79,
+            current_world: 79,
+            last_seen: existing_observed_at,
+            seen_count: 3,
+            account_id: "12345".to_string(),
+        };
+        let stale_identity = crate::player::UploadableCharacterIdentity {
+            content_id: 6006,
+            name: "Stale Name".to_string(),
+            home_world: 74,
+            world_name: "Tonberry".to_string(),
+            source: "party_detail".to_string(),
+            observed_at: stale_observed_at,
+        };
+
+        let merged = crate::player::merge_identity_into_player(
+            Some(&existing),
+            Some(existing_observed_at),
+            &stale_identity,
+            existing_observed_at + chrono::TimeDelta::minutes(1),
+        );
+
+        assert!(!merged.applied_incoming_identity);
+        assert_eq!(merged.player.name, "Fresh Name");
+        assert_eq!(merged.player.home_world, 79);
+        assert_eq!(merged.player.current_world, 79);
+    }
+
+    #[tokio::test]
+    async fn identity_endpoint_requires_standard_ingest_authorization() {
+        let state = test_state_with_signature_required().await;
+        let payload = vec![crate::player::UploadableCharacterIdentity {
+            content_id: 7007,
+            name: "Authorized Name".to_string(),
+            home_world: 74,
+            world_name: "Tonberry".to_string(),
+            source: "chara_card".to_string(),
+            observed_at: chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+                .unwrap()
+                .with_timezone(&Utc),
+        }];
+
+        let response =
+            super::contribute_character_identity_handler(state, HeaderMap::new(), None, payload)
+                .await
+                .unwrap();
+
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     }
 }
