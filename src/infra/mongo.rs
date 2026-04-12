@@ -462,7 +462,6 @@ fn build_identity_upsert_update(
     merged: &crate::player::IdentityMergeResult,
 ) -> Document {
     let mut set_doc = doc! {
-        "content_id": merged.player.content_id as i64,
         "name": merged.player.name.clone(),
         "home_world": merged.player.home_world as u32,
         "current_world": merged.player.current_world as u32,
@@ -833,7 +832,8 @@ pub async fn get_report_parse_summaries_by_zone(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_identity_compare_and_set_filter, build_player_upsert_documents,
+        build_identity_compare_and_set_filter, build_identity_upsert_update,
+        build_player_upsert_documents,
         is_duplicate_key_error, PreparedPlayerUpsert,
     };
     use chrono::Utc;
@@ -899,6 +899,35 @@ mod tests {
         assert_eq!(filter.get_i64("content_id").unwrap(), 7007);
         assert_eq!(filter.get_datetime("last_seen").unwrap().to_chrono(), last_seen);
         assert_eq!(filter.get_array("$or").unwrap().len(), 2);
+    }
+
+    #[test]
+    fn identity_upsert_update_keeps_content_id_out_of_set_clause() {
+        let observed_at = chrono::DateTime::parse_from_rfc3339("2026-04-12T12:30:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let merged = crate::player::IdentityMergeResult {
+            player: crate::player::Player {
+                content_id: 8008,
+                name: "Known Player".to_string(),
+                home_world: 74,
+                current_world: 79,
+                last_seen: observed_at,
+                seen_count: 2,
+                account_id: "123".to_string(),
+            },
+            identity_observed_at: observed_at,
+            world_name: "Cerberus".to_string(),
+            source: "plugin".to_string(),
+            applied_incoming_identity: true,
+        };
+
+        let update = build_identity_upsert_update(8008, &merged);
+        let set_doc = update.get_document("$set").unwrap();
+        let set_on_insert_doc = update.get_document("$setOnInsert").unwrap();
+
+        assert!(set_doc.get("content_id").is_none());
+        assert_eq!(set_on_insert_doc.get_i64("content_id").unwrap(), 8008);
     }
 
     #[test]
