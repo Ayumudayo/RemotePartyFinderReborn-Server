@@ -5,8 +5,6 @@ use serde::{Deserialize, Serialize};
 
 use crate::fflogs::EncounterParse;
 
-pub const REPORT_PARSE_SOURCE: &str = "report_parse";
-
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ReportParseIdentityKey {
     pub normalized_name: String,
@@ -51,7 +49,6 @@ pub struct ReportParseSummaryDoc {
     pub home_world: u16,
     #[serde(default)]
     pub zones: HashMap<String, ReportParseZoneSummary>,
-    pub source: String,
     #[serde(with = "mongodb::bson::serde_helpers::chrono_datetime_as_bson_datetime")]
     pub updated_at: chrono::DateTime<Utc>,
 }
@@ -71,8 +68,6 @@ mod tests {
         ReportParseZoneSummary,
     };
     use crate::fflogs::EncounterParse;
-    use crate::report_parse::REPORT_PARSE_SOURCE;
-
     #[test]
     fn normalize_character_name_trims_and_lowercases() {
         assert_eq!(normalize_character_name("  Alice Example  "), "alice example");
@@ -119,7 +114,6 @@ mod tests {
                     "updated_at": bson::DateTime::from_chrono(now),
                 }
             },
-            "source": "report_parse",
             "updated_at": bson::DateTime::from_chrono(now),
         };
 
@@ -160,7 +154,6 @@ mod tests {
                     updated_at: now,
                 },
             )]),
-            source: REPORT_PARSE_SOURCE.to_string(),
             updated_at: now,
         };
 
