@@ -695,7 +695,9 @@ pub use crate::fflogs::cache::{
     is_zone_cache_expired, is_zone_cache_expired_with_hidden_ttl_hours, EncounterParse,
     ParseCacheDoc, ZoneCache,
 };
-pub use crate::report_parse::{ReportParseIdentityKey, ReportParseSummaryDoc};
+pub use crate::report_parse::{
+    ReportParseIdentityKey, ReportParseSummaryDoc, ReportParseZoneSummary,
+};
 
 pub async fn get_zone_cache(
     collection: Collection<ParseCacheDoc>,
@@ -783,7 +785,7 @@ pub async fn get_report_parse_summaries_by_zone(
     collection: Collection<ReportParseSummaryDoc>,
     zone_key: &str,
     identities: &[ReportParseIdentityKey],
-) -> anyhow::Result<HashMap<ReportParseIdentityKey, ReportParseSummaryDoc>> {
+) -> anyhow::Result<HashMap<ReportParseIdentityKey, ReportParseZoneSummary>> {
     if zone_key.trim().is_empty() || identities.is_empty() {
         return Ok(HashMap::new());
     }
@@ -809,7 +811,7 @@ pub async fn get_report_parse_summaries_by_zone(
     let cursor = collection
         .find(
             doc! {
-                "zone_key": zone_key,
+                format!("zones.{}", zone_key): { "$exists": true },
                 "$or": filters,
             },
             None,
@@ -823,7 +825,12 @@ pub async fn get_report_parse_summaries_by_zone(
 
     let mut summaries = HashMap::new();
     for doc in docs {
-        summaries.insert(ReportParseIdentityKey::from_summary(&doc), doc);
+        if let Some(zone_summary) = doc.zones.get(zone_key) {
+            summaries.insert(
+                ReportParseIdentityKey::from_summary(&doc),
+                zone_summary.clone(),
+            );
+        }
     }
 
     Ok(summaries)

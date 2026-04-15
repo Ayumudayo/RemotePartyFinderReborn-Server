@@ -131,7 +131,7 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
 
                 let mut report_parse_data_map: HashMap<
                     String,
-                    HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>,
+                    HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseZoneSummary>,
                 > = HashMap::new();
                 for (zone_key, identities) in report_parse_requests {
                     if let Ok(summaries) = crate::mongo::get_report_parse_summaries_by_zone(

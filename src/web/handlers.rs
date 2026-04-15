@@ -153,7 +153,7 @@ fn build_candidate_servers(anchor_world_id: u16) -> Vec<ParseJobCandidateServer>
 fn lookup_fflogs_displays(
     parse_docs: &HashMap<u64, ParseCacheDoc>,
     report_parse_summaries: Option<
-        &HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>,
+        &HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseZoneSummary>,
     >,
     content_id: u64,
     fallback_name: Option<&str>,
@@ -320,7 +320,7 @@ pub async fn listings_handler(
 
             let mut all_report_parse_summaries: HashMap<
                 String,
-                HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseSummaryDoc>,
+                HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseZoneSummary>,
             > = HashMap::new();
             for (zone_key, identities) in report_parse_requests {
                 let summaries = crate::mongo::get_report_parse_summaries_by_zone(
