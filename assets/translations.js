@@ -19,6 +19,12 @@ const TRANSLATIONS = {
     no_filter_results: { en: "No results found matching your filters", ja: "条件に一致する募集が見つかりませんでした", de: "Keine Ergebnisse für deine Filter gefunden", fr: "Aucun résultat ne correspond à vos filtres", },
     loading_listings: { en: "Loading listings...", ja: "募集を読み込み中...", de: "Suche wird geladen...", fr: "Chargement des recrutements...", },
     listings_refresh_failed: { en: "Unable to load listings. Retrying...", ja: "募集を読み込めませんでした。再試行しています...", de: "Suche konnte nicht geladen werden. Neuer Versuch...", fr: "Impossible de charger les recrutements. Nouvelle tentative...", },
+    alliance_a: { en: "Alliance A", ja: "アライアンスA", de: "Allianz A", fr: "Alliance A", },
+    alliance_b: { en: "Alliance B", ja: "アライアンスB", de: "Allianz B", fr: "Alliance B", },
+    alliance_c: { en: "Alliance C", ja: "アライアンスC", de: "Allianz C", fr: "Alliance C", },
+    fflogs_hidden: { en: "FFLogs: Hidden", ja: "FFLogs: 非公開", de: "FFLogs: Verborgen", fr: "FFLogs : masqué", },
+    fflogs_originally_hidden_player: { en: "FFLogs: Originally hidden player", ja: "FFLogs: 元は非公開のプレイヤー", de: "FFLogs: Ursprünglich verborgener Spieler", fr: "FFLogs : joueur initialement masqué", },
+    fflogs_hidden_badge: { en: "HID", ja: "HID", de: "HID", fr: "HID", },
     // 시간 표시 관련 번역 (i18n)
     time_in: { en: "in", ja: "後", de: "in", fr: "dans", },
     time_ago: { en: "ago", ja: "前", de: "vor", fr: "il y a", },

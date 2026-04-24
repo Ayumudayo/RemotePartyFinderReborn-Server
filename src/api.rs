@@ -287,15 +287,6 @@ fn role_class_from_class_job(class_job: &ffxiv_types::jobs::ClassJob) -> &'stati
     }
 }
 
-fn party_label(party_index: u8) -> Option<&'static str> {
-    match party_index {
-        0 => Some("Alliance A"),
-        1 => Some("Alliance B"),
-        2 => Some("Alliance C"),
-        _ => None,
-    }
-}
-
 fn build_display_slots(listing: &PartyFinderListing) -> Vec<ApiDisplaySlot> {
     listing
         .slots()
@@ -436,7 +427,6 @@ struct ApiReadableMember {
     progress: ApiProgressDisplay,
     slot_index: usize,
     party_index: u8,
-    party_label: Option<&'static str>,
     fflogs_character_url: Option<String>,
 }
 
@@ -456,7 +446,6 @@ impl From<RenderableMember> for ApiReadableMember {
             progress: value.progress.into(),
             slot_index: value.slot_index,
             party_index: value.party_index,
-            party_label: party_label(value.party_index),
             fflogs_character_url,
         }
     }
@@ -470,16 +459,12 @@ struct ApiParseDisplay {
     secondary_color_class: String,
     has_secondary: bool,
     hidden: bool,
-    hidden_rail_tag_label: Option<&'static str>,
-    hidden_rail_tag_title: &'static str,
+    originally_hidden: bool,
     estimated: bool,
 }
 
 impl From<ParseDisplay> for ApiParseDisplay {
     fn from(value: ParseDisplay) -> Self {
-        let hidden_rail_tag_label = value.hidden_rail_tag_label();
-        let hidden_rail_tag_title = value.hidden_rail_tag_title();
-
         Self {
             primary_percentile: value.primary_percentile,
             primary_color_class: value.primary_color_class,
@@ -487,8 +472,7 @@ impl From<ParseDisplay> for ApiParseDisplay {
             secondary_color_class: value.secondary_color_class,
             has_secondary: value.has_secondary,
             hidden: value.hidden,
-            hidden_rail_tag_label,
-            hidden_rail_tag_title,
+            originally_hidden: value.originally_hidden,
             estimated: value.estimated,
         }
     }
@@ -542,6 +526,7 @@ struct ApiDisplaySlot {
 
 #[cfg(test)]
 mod tests {
+    use chrono::Utc;
     use serde_json::json;
     use sestring::payload::{AutoTranslatePayload, TextPayload};
     use sestring::Payload;
@@ -554,6 +539,9 @@ mod tests {
         ConditionFlags, DutyCategory, DutyFinderSettingsFlags, DutyType, JobFlags, LootRuleFlags,
         ObjectiveFlags, PartyFinderListing, PartyFinderSlot, SearchAreaFlags,
     };
+    use crate::parse_resolver::ParseSource;
+    use crate::player::Player;
+    use crate::template::listings::{ParseDisplay, ProgressDisplay, RenderableMember};
     use crate::web::ListingsSnapshotCacheState;
 
     use super::{
@@ -607,6 +595,27 @@ mod tests {
         }
     }
 
+    fn sample_renderable_member(party_index: u8, parse: ParseDisplay) -> RenderableMember {
+        RenderableMember {
+            job_id: 19,
+            player: Player {
+                content_id: 42,
+                name: "Neutral Member".to_string(),
+                home_world: 73,
+                current_world: 73,
+                last_seen: Utc::now(),
+                seen_count: 1,
+                account_id: "-1".to_string(),
+            },
+            parse,
+            progress: ProgressDisplay::default(),
+            slot_index: 0,
+            party_index,
+            party_header: None,
+            identity_fallback: false,
+        }
+    }
+
     #[test]
     fn api_listing_uses_display_slot_model_for_alliance_layouts() {
         let listing =
@@ -650,6 +659,61 @@ mod tests {
             serialized.get("duty_name").is_none(),
             "snapshot should not include localized duty names"
         );
+    }
+
+    #[test]
+    fn api_listing_serializes_neutral_member_display_state() {
+        let hidden_fallback_parse = ParseDisplay::new(
+            Some(84),
+            "parse-purple".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
+            false,
+            true,
+            false,
+            ParseSource::ReportParse,
+        );
+        let hidden_leader_parse = ParseDisplay::new(
+            None,
+            "parse-none".to_string(),
+            None,
+            "parse-none".to_string(),
+            false,
+            false,
+            true,
+            false,
+            ParseSource::ReportParse,
+        );
+
+        let serialized = serde_json::to_value(ApiReadableListing::from_parts(
+            sample_listing(),
+            vec![sample_renderable_member(1, hidden_fallback_parse)],
+            hidden_leader_parse,
+        ))
+        .expect("api listing should serialize");
+
+        let member = &serialized["members"][0];
+        assert!(
+            member.get("party_label").is_none(),
+            "snapshot should expose party_index, not localized alliance labels"
+        );
+        assert!(
+            member["parse"].get("hidden_rail_tag_label").is_none(),
+            "snapshot should expose hidden state, not display labels"
+        );
+        assert!(
+            member["parse"].get("hidden_rail_tag_title").is_none(),
+            "snapshot should expose hidden state, not display tooltips"
+        );
+        assert_eq!(member["parse"]["originally_hidden"], json!(true));
+        assert!(
+            serialized["leader_parse"]
+                .get("hidden_rail_tag_title")
+                .is_none(),
+            "leader parse should also be language-neutral"
+        );
+        assert_eq!(serialized["leader_parse"]["originally_hidden"], json!(true));
     }
 
     #[tokio::test]

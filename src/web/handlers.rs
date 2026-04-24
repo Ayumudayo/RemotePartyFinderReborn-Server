@@ -522,17 +522,11 @@ pub(crate) async fn build_listings_template(
                 );
             }
 
-            ListingsTemplate {
-                containers: renderable_containers,
-                lang,
-            }
+            ListingsTemplate::new(renderable_containers, lang)
         }
         Err(e) => {
             tracing::error!("Failed to get listings: {:#?}", e);
-            ListingsTemplate {
-                containers: Default::default(),
-                lang,
-            }
+            ListingsTemplate::new(Default::default(), lang)
         }
     }
 }
@@ -541,10 +535,10 @@ pub async fn listings_handler(
     _state: Arc<State>,
     codes: Option<String>,
 ) -> std::result::Result<impl Reply, Infallible> {
-    Ok(ListingsTemplate {
-        containers: Vec::new(),
-        lang: Language::from_codes(codes.as_deref()),
-    })
+    Ok(ListingsTemplate::new(
+        Vec::new(),
+        Language::from_codes(codes.as_deref()),
+    ))
 }
 
 pub async fn stats_handler(

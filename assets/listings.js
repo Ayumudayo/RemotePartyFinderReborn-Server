@@ -565,10 +565,11 @@
         }
 
         if (parse.hidden) {
+            const hiddenTitle = escapeHtml(translate('fflogs_hidden', 'FFLogs: Hidden'));
             if (parse.has_secondary) {
-                return '<div class="parse-dual parse-dual-hidden" title="FFLogs: Hidden"><span class="parse parse-hidden">HID</span></div>';
+                return `<div class="parse-dual parse-dual-hidden" title="${hiddenTitle}"><span class="parse parse-hidden">HID</span></div>`;
             }
-            return '<span class="parse parse-hidden" title="FFLogs: Hidden">HID</span>';
+            return `<span class="parse parse-hidden" title="${hiddenTitle}">HID</span>`;
         }
 
         if (parse.has_secondary) {
@@ -578,9 +579,22 @@
         return renderParseValue(parse.primary_percentile, parse.primary_color_class, 'Best Parse', 'No log data');
     }
 
+    function hiddenRailTagLabel(parse) {
+        return parse?.originally_hidden
+            ? translate('fflogs_hidden_badge', 'HID')
+            : '';
+    }
+
+    function hiddenRailTagTitle(parse) {
+        return parse?.originally_hidden
+            ? translate('fflogs_originally_hidden_player', 'FFLogs: Originally hidden player')
+            : translate('fflogs_hidden', 'FFLogs: Hidden');
+    }
+
     function renderParseRailTag(parse) {
-        if (!parse?.hidden_rail_tag_label) return '';
-        return `<span class="tag tag-hidden" title="${escapeHtml(parse.hidden_rail_tag_title || 'FFLogs: Hidden')}">${escapeHtml(parse.hidden_rail_tag_label)}</span>`;
+        const label = hiddenRailTagLabel(parse);
+        if (!label) return '';
+        return `<span class="tag tag-hidden" title="${escapeHtml(hiddenRailTagTitle(parse))}">${escapeHtml(label)}</span>`;
     }
 
     function renderEstimatedTag(parse) {
@@ -631,6 +645,12 @@
         return `<div class="members-list">${header}<ul>${members.map(renderMemberRow).join('')}</ul></div>`;
     }
 
+    function alliancePartyLabel(partyIndex) {
+        const keys = ['alliance_a', 'alliance_b', 'alliance_c'];
+        const key = keys[partyIndex];
+        return key ? translate(key, `Alliance ${String.fromCharCode(65 + partyIndex)}`) : '';
+    }
+
     function renderAllianceMembersSection(listing) {
         const members = Array.isArray(listing.members) ? listing.members : [];
         const header = `<div class="members-header">Members (${members.length})</div>`;
@@ -650,7 +670,7 @@
         const columns = Array.from(groups.entries())
             .sort((a, b) => a[0] - b[0])
             .map(([partyIndex, groupMembers]) => {
-                const label = groupMembers[0]?.party_label || `Alliance ${String.fromCharCode(65 + partyIndex)}`;
+                const label = alliancePartyLabel(partyIndex) || `Alliance ${String.fromCharCode(65 + partyIndex)}`;
                 return `<div class="alliance-column"><div class="alliance-heading">${escapeHtml(label)}</div><ul class="alliance-member-list">${groupMembers.map(renderMemberRow).join('')}</ul></div>`;
             })
             .join('');

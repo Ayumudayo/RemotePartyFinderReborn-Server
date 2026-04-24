@@ -5,6 +5,28 @@ use crate::listing_container::QueriedListing;
 use crate::sestring_ext::SeStringExt;
 use askama::Template;
 use std::borrow::Borrow;
+use std::sync::OnceLock;
+
+pub fn listing_data_asset_version() -> &'static str {
+    static VERSION: OnceLock<String> = OnceLock::new();
+
+    VERSION
+        .get_or_init(|| {
+            use sha2::{Digest, Sha256};
+
+            let digest = Sha256::digest(include_bytes!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/assets/listing-data.js"
+            )));
+
+            digest
+                .iter()
+                .take(8)
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        })
+        .as_str()
+}
 
 fn is_known_member_name(name: &str) -> bool {
     let trimmed = name.trim();
@@ -37,6 +59,17 @@ fn encode_fflogs_path_segment(input: &str) -> String {
 pub struct ListingsTemplate {
     pub containers: Vec<RenderableListing>,
     pub lang: Language,
+    pub listing_data_asset_version: &'static str,
+}
+
+impl ListingsTemplate {
+    pub fn new(containers: Vec<RenderableListing>, lang: Language) -> Self {
+        Self {
+            containers,
+            lang,
+            listing_data_asset_version: listing_data_asset_version(),
+        }
+    }
 }
 
 #[derive(Debug)]

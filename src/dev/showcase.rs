@@ -532,10 +532,8 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
 }
 
 pub fn render_showcase_html() -> anyhow::Result<String> {
-    let template = ListingsTemplate {
-        containers: build_showcase_listings(),
-        lang: crate::ffxiv::Language::English,
-    };
+    let template =
+        ListingsTemplate::new(build_showcase_listings(), crate::ffxiv::Language::English);
 
     Ok(template.render()?)
 }
@@ -674,6 +672,17 @@ mod tests {
         assert!(html.contains(r#"class="alliance-heading">Alliance B</div>"#));
         assert!(!html.contains(r#"<li class="party-divider">Alliance B</li>"#));
         assert!(html.contains("No information available for other members"));
+    }
+
+    #[test]
+    fn render_showcase_html_uses_cache_busted_listing_data_asset() {
+        let html = render_showcase_html().expect("showcase should render");
+
+        assert!(html.contains(r#"/assets/listing-data.js?v="#));
+        assert!(
+            !html.contains(r#"/assets/listing-data.js?v=1""#),
+            "listing-data.js is immutable, so it must not use a fixed cache key"
+        );
     }
 
     #[test]

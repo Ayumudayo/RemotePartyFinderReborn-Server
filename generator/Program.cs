@@ -86,6 +86,12 @@ internal class Program
             ["no_filter_results"] = new() { ["en"] = "No results found matching your filters", ["ja"] = "条件に一致する募集が見つかりませんでした", ["de"] = "Keine Ergebnisse für deine Filter gefunden", ["fr"] = "Aucun résultat ne correspond à vos filtres" },
             ["loading_listings"] = new() { ["en"] = "Loading listings...", ["ja"] = "募集を読み込み中...", ["de"] = "Suche wird geladen...", ["fr"] = "Chargement des recrutements..." },
             ["listings_refresh_failed"] = new() { ["en"] = "Unable to load listings. Retrying...", ["ja"] = "募集を読み込めませんでした。再試行しています...", ["de"] = "Suche konnte nicht geladen werden. Neuer Versuch...", ["fr"] = "Impossible de charger les recrutements. Nouvelle tentative..." },
+            ["alliance_a"] = new() { ["en"] = "Alliance A", ["ja"] = "アライアンスA", ["de"] = "Allianz A", ["fr"] = "Alliance A" },
+            ["alliance_b"] = new() { ["en"] = "Alliance B", ["ja"] = "アライアンスB", ["de"] = "Allianz B", ["fr"] = "Alliance B" },
+            ["alliance_c"] = new() { ["en"] = "Alliance C", ["ja"] = "アライアンスC", ["de"] = "Allianz C", ["fr"] = "Alliance C" },
+            ["fflogs_hidden"] = new() { ["en"] = "FFLogs: Hidden", ["ja"] = "FFLogs: 非公開", ["de"] = "FFLogs: Verborgen", ["fr"] = "FFLogs : masqué" },
+            ["fflogs_originally_hidden_player"] = new() { ["en"] = "FFLogs: Originally hidden player", ["ja"] = "FFLogs: 元は非公開のプレイヤー", ["de"] = "FFLogs: Ursprünglich verborgener Spieler", ["fr"] = "FFLogs : joueur initialement masqué" },
+            ["fflogs_hidden_badge"] = new() { ["en"] = "HID", ["ja"] = "HID", ["de"] = "HID", ["fr"] = "HID" },
 
             // Time
             ["time_in"] = new() { ["en"] = "in", ["ja"] = "後", ["de"] = "in", ["fr"] = "dans" },
@@ -179,6 +185,12 @@ internal class Program
         AppendEntry("no_filter_results");
         AppendEntry("loading_listings");
         AppendEntry("listings_refresh_failed");
+        AppendEntry("alliance_a");
+        AppendEntry("alliance_b");
+        AppendEntry("alliance_c");
+        AppendEntry("fflogs_hidden");
+        AppendEntry("fflogs_originally_hidden_player");
+        AppendEntry("fflogs_hidden_badge");
 
         sb.Append("    // 시간 표시 관련 번역 (i18n)\n");
         AppendEntry("time_in");
