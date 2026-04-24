@@ -262,6 +262,10 @@ fn assets() -> BoxedFilter<(impl Reply,)> {
         .boxed()
 }
 
+fn immutable_asset_cache_control() -> &'static str {
+    "public, max-age=31536000, immutable"
+}
+
 fn icons() -> BoxedFilter<(impl Reply,)> {
     warp::path("icons.svg")
         .and(warp::path::end())
@@ -301,6 +305,9 @@ fn listing_data_js() -> BoxedFilter<(impl Reply,)> {
     warp::path("listing-data.js")
         .and(warp::path::end())
         .and(warp::fs::file("./assets/listing-data.js"))
+        .map(|file| {
+            warp::reply::with_header(file, "Cache-Control", immutable_asset_cache_control())
+        })
         .boxed()
 }
 
@@ -344,4 +351,17 @@ fn translations_js() -> BoxedFilter<(impl Reply,)> {
         .and(warp::path::end())
         .and(warp::fs::file("./assets/translations.js"))
         .boxed()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::immutable_asset_cache_control;
+
+    #[test]
+    fn immutable_asset_cache_control_is_long_lived() {
+        assert_eq!(
+            immutable_asset_cache_control(),
+            "public, max-age=31536000, immutable"
+        );
+    }
 }
