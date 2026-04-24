@@ -39,3 +39,5 @@ rustc-ice-*.txt
 /generator/obj/
 /generator/bin/
 /generator/.vs/
+
+docs/
