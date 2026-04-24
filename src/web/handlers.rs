@@ -180,6 +180,7 @@ fn lookup_fflogs_displays(
     let resolved = crate::parse_resolver::resolve_parse_data(
         plugin_zone_cache,
         fallback_summary.map(|summary| &summary.encounters),
+        fallback_summary.map(|summary| summary.updated_at),
         encounter_id,
         secondary_encounter_id,
     );

@@ -89,9 +89,50 @@ fn has_relevant_fallback_data(
             .unwrap_or(false)
 }
 
+fn hydrate_resolved(
+    resolved: &mut ResolvedParseData,
+    encounters: &HashMap<String, EncounterParse>,
+    encounter_id: u32,
+    secondary_encounter_id: Option<u32>,
+) {
+    let (p1, p1_class, p1_boss, p1_clears) = hydrate_slot(encounters, encounter_id);
+    resolved.primary_percentile = p1;
+    resolved.primary_color_class = p1_class;
+    resolved.primary_boss_percentage = p1_boss;
+    resolved.primary_clear_count = p1_clears;
+
+    if let Some(sec_id) = secondary_encounter_id {
+        let (p2, p2_class, p2_boss, p2_clears) = hydrate_slot(encounters, sec_id);
+        resolved.secondary_percentile = p2;
+        resolved.secondary_color_class = p2_class;
+        resolved.secondary_boss_percentage = p2_boss;
+        resolved.secondary_clear_count = p2_clears;
+    }
+}
+
+fn relevant_fallback_encounters<'a>(
+    fallback_encounters: Option<&'a HashMap<String, EncounterParse>>,
+    encounter_id: u32,
+    secondary_encounter_id: Option<u32>,
+) -> Option<&'a HashMap<String, EncounterParse>> {
+    fallback_encounters.filter(|encounters| {
+        has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
+    })
+}
+
+fn report_parse_is_newer_than_plugin(
+    plugin_zone_cache: &ZoneCache,
+    fallback_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+) -> bool {
+    fallback_updated_at
+        .map(|updated_at| updated_at > plugin_zone_cache.fetched_at)
+        .unwrap_or(false)
+}
+
 pub fn resolve_parse_data(
     plugin_zone_cache: Option<&ZoneCache>,
     fallback_encounters: Option<&HashMap<String, EncounterParse>>,
+    fallback_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     encounter_id: u32,
     secondary_encounter_id: Option<u32>,
 ) -> ResolvedParseData {
@@ -100,48 +141,47 @@ pub fn resolve_parse_data(
 
     match plugin_zone_cache {
         Some(zone_cache) if !zone_cache.hidden => {
-            resolved.source = ParseSource::Plugin;
-            resolved.estimated = zone_cache.estimated;
-
-            let (p1, p1_class, p1_boss, p1_clears) =
-                hydrate_slot(&zone_cache.encounters, encounter_id);
-            resolved.primary_percentile = p1;
-            resolved.primary_color_class = p1_class;
-            resolved.primary_boss_percentage = p1_boss;
-            resolved.primary_clear_count = p1_clears;
-
-            if let Some(sec_id) = secondary_encounter_id {
-                let (p2, p2_class, p2_boss, p2_clears) =
-                    hydrate_slot(&zone_cache.encounters, sec_id);
-                resolved.secondary_percentile = p2;
-                resolved.secondary_color_class = p2_class;
-                resolved.secondary_boss_percentage = p2_boss;
-                resolved.secondary_clear_count = p2_clears;
+            if let Some(encounters) = relevant_fallback_encounters(
+                fallback_encounters,
+                encounter_id,
+                secondary_encounter_id,
+            ) {
+                if report_parse_is_newer_than_plugin(zone_cache, fallback_updated_at) {
+                    resolved.source = ParseSource::ReportParse;
+                    hydrate_resolved(
+                        &mut resolved,
+                        encounters,
+                        encounter_id,
+                        secondary_encounter_id,
+                    );
+                    return resolved;
+                }
             }
 
+            resolved.source = ParseSource::Plugin;
+            resolved.estimated = zone_cache.estimated;
+            hydrate_resolved(
+                &mut resolved,
+                &zone_cache.encounters,
+                encounter_id,
+                secondary_encounter_id,
+            );
             resolved
         }
         Some(zone_cache) if zone_cache.hidden => {
-            if let Some(encounters) = fallback_encounters.filter(|encounters| {
-                has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
-            }) {
+            if let Some(encounters) = relevant_fallback_encounters(
+                fallback_encounters,
+                encounter_id,
+                secondary_encounter_id,
+            ) {
                 resolved.source = ParseSource::ReportParse;
                 resolved.originally_hidden = true;
-
-                let (p1, p1_class, p1_boss, p1_clears) = hydrate_slot(encounters, encounter_id);
-                resolved.primary_percentile = p1;
-                resolved.primary_color_class = p1_class;
-                resolved.primary_boss_percentage = p1_boss;
-                resolved.primary_clear_count = p1_clears;
-
-                if let Some(sec_id) = secondary_encounter_id {
-                    let (p2, p2_class, p2_boss, p2_clears) = hydrate_slot(encounters, sec_id);
-                    resolved.secondary_percentile = p2;
-                    resolved.secondary_color_class = p2_class;
-                    resolved.secondary_boss_percentage = p2_boss;
-                    resolved.secondary_clear_count = p2_clears;
-                }
-
+                hydrate_resolved(
+                    &mut resolved,
+                    encounters,
+                    encounter_id,
+                    secondary_encounter_id,
+                );
                 resolved
             } else {
                 resolved.source = ParseSource::Plugin;
@@ -150,24 +190,18 @@ pub fn resolve_parse_data(
             }
         }
         None => {
-            if let Some(encounters) = fallback_encounters.filter(|encounters| {
-                has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
-            }) {
+            if let Some(encounters) = relevant_fallback_encounters(
+                fallback_encounters,
+                encounter_id,
+                secondary_encounter_id,
+            ) {
                 resolved.source = ParseSource::ReportParse;
-
-                let (p1, p1_class, p1_boss, p1_clears) = hydrate_slot(encounters, encounter_id);
-                resolved.primary_percentile = p1;
-                resolved.primary_color_class = p1_class;
-                resolved.primary_boss_percentage = p1_boss;
-                resolved.primary_clear_count = p1_clears;
-
-                if let Some(sec_id) = secondary_encounter_id {
-                    let (p2, p2_class, p2_boss, p2_clears) = hydrate_slot(encounters, sec_id);
-                    resolved.secondary_percentile = p2;
-                    resolved.secondary_color_class = p2_class;
-                    resolved.secondary_boss_percentage = p2_boss;
-                    resolved.secondary_clear_count = p2_clears;
-                }
+                hydrate_resolved(
+                    &mut resolved,
+                    encounters,
+                    encounter_id,
+                    secondary_encounter_id,
+                );
             }
 
             resolved
@@ -180,7 +214,7 @@ pub fn resolve_parse_data(
 mod tests {
     use std::collections::HashMap;
 
-    use chrono::Utc;
+    use chrono::{TimeDelta, Utc};
 
     use crate::fflogs::{EncounterParse, ZoneCache};
 
@@ -191,8 +225,17 @@ mod tests {
         estimated: bool,
         encounters: HashMap<String, EncounterParse>,
     ) -> ZoneCache {
+        zone_cache_at(Utc::now(), hidden, estimated, encounters)
+    }
+
+    fn zone_cache_at(
+        fetched_at: chrono::DateTime<Utc>,
+        hidden: bool,
+        estimated: bool,
+        encounters: HashMap<String, EncounterParse>,
+    ) -> ZoneCache {
         ZoneCache {
-            fetched_at: Utc::now(),
+            fetched_at,
             estimated,
             matched_server: None,
             hidden,
@@ -222,7 +265,7 @@ mod tests {
         );
         let fallback = HashMap::from([("123".to_string(), encounter(88.1, Some(12.0), Some(1)))]);
 
-        let resolved = resolve_parse_data(Some(&plugin), Some(&fallback), 123, None);
+        let resolved = resolve_parse_data(Some(&plugin), Some(&fallback), None, 123, None);
 
         assert_eq!(resolved.source, ParseSource::Plugin);
         assert_eq!(resolved.primary_percentile, Some(97));
@@ -239,7 +282,7 @@ mod tests {
         );
         let fallback = HashMap::from([("123".to_string(), encounter(84.2, Some(7.0), Some(2)))]);
 
-        let resolved = resolve_parse_data(Some(&plugin), Some(&fallback), 123, None);
+        let resolved = resolve_parse_data(Some(&plugin), Some(&fallback), None, 123, None);
 
         assert_eq!(resolved.source, ParseSource::ReportParse);
         assert_eq!(resolved.primary_percentile, Some(84));
@@ -254,7 +297,7 @@ mod tests {
         let plugin = zone_cache(true, false, HashMap::new());
         let fallback = HashMap::from([("999".to_string(), encounter(84.2, Some(7.0), Some(2)))]);
 
-        let resolved = resolve_parse_data(Some(&plugin), Some(&fallback), 123, None);
+        let resolved = resolve_parse_data(Some(&plugin), Some(&fallback), None, 123, None);
 
         assert_eq!(resolved.source, ParseSource::Plugin);
         assert!(resolved.hidden);
@@ -267,7 +310,7 @@ mod tests {
     fn resolve_parse_data_preserves_hidden_plugin_state_without_fallback() {
         let plugin = zone_cache(true, false, HashMap::new());
 
-        let resolved = resolve_parse_data(Some(&plugin), None, 123, None);
+        let resolved = resolve_parse_data(Some(&plugin), None, None, 123, None);
 
         assert_eq!(resolved.source, ParseSource::Plugin);
         assert!(resolved.hidden);
@@ -278,7 +321,7 @@ mod tests {
     fn resolve_parse_data_uses_report_parse_when_plugin_data_is_missing() {
         let fallback = HashMap::from([("123".to_string(), encounter(91.8, None, Some(3)))]);
 
-        let resolved = resolve_parse_data(None, Some(&fallback), 123, None);
+        let resolved = resolve_parse_data(None, Some(&fallback), None, 123, None);
 
         assert_eq!(resolved.source, ParseSource::ReportParse);
         assert_eq!(resolved.primary_percentile, Some(91));
@@ -290,7 +333,7 @@ mod tests {
     fn resolve_parse_data_ignores_fallback_without_requested_encounter_when_plugin_missing() {
         let fallback = HashMap::from([("999".to_string(), encounter(91.8, None, Some(3)))]);
 
-        let resolved = resolve_parse_data(None, Some(&fallback), 123, None);
+        let resolved = resolve_parse_data(None, Some(&fallback), None, 123, None);
 
         assert_eq!(resolved.source, ParseSource::None);
         assert_eq!(resolved.primary_percentile, None);
@@ -306,14 +349,95 @@ mod tests {
         );
         let fallback = HashMap::from([("123".to_string(), encounter(84.2, Some(7.0), Some(2)))]);
 
-        let hidden_resolved = resolve_parse_data(Some(&hidden_plugin), Some(&fallback), 123, None);
+        let hidden_resolved =
+            resolve_parse_data(Some(&hidden_plugin), Some(&fallback), None, 123, None);
         assert_eq!(hidden_resolved.source, ParseSource::ReportParse);
         assert!(hidden_resolved.originally_hidden);
         assert!(!hidden_resolved.hidden);
 
-        let missing_resolved = resolve_parse_data(None, Some(&fallback), 123, None);
+        let missing_resolved = resolve_parse_data(None, Some(&fallback), None, 123, None);
         assert_eq!(missing_resolved.source, ParseSource::ReportParse);
         assert!(!missing_resolved.originally_hidden);
+    }
+
+    #[test]
+    fn resolve_parse_data_uses_newer_report_parse_over_stale_visible_plugin_data() {
+        let plugin_fetched_at = Utc::now() - TimeDelta::try_minutes(30).unwrap();
+        let report_updated_at = plugin_fetched_at + TimeDelta::try_minutes(10).unwrap();
+        let plugin = zone_cache_at(
+            plugin_fetched_at,
+            false,
+            false,
+            HashMap::from([("123".to_string(), encounter(72.1, None, Some(1)))]),
+        );
+        let fallback = HashMap::from([("123".to_string(), encounter(93.6, Some(4.0), Some(5)))]);
+
+        let resolved = resolve_parse_data(
+            Some(&plugin),
+            Some(&fallback),
+            Some(report_updated_at),
+            123,
+            None,
+        );
+
+        assert_eq!(resolved.source, ParseSource::ReportParse);
+        assert_eq!(resolved.primary_percentile, Some(93));
+        assert_eq!(resolved.primary_boss_percentage, Some(4));
+        assert_eq!(resolved.primary_clear_count, Some(5));
+        assert!(!resolved.hidden);
+        assert!(!resolved.originally_hidden);
+    }
+
+    #[test]
+    fn resolve_parse_data_keeps_newer_visible_plugin_data_over_older_report_parse() {
+        let plugin_fetched_at = Utc::now();
+        let report_updated_at = plugin_fetched_at - TimeDelta::try_minutes(10).unwrap();
+        let plugin = zone_cache_at(
+            plugin_fetched_at,
+            false,
+            false,
+            HashMap::from([("123".to_string(), encounter(97.9, None, Some(8)))]),
+        );
+        let fallback = HashMap::from([("123".to_string(), encounter(55.0, Some(20.0), Some(1)))]);
+
+        let resolved = resolve_parse_data(
+            Some(&plugin),
+            Some(&fallback),
+            Some(report_updated_at),
+            123,
+            None,
+        );
+
+        assert_eq!(resolved.source, ParseSource::Plugin);
+        assert_eq!(resolved.primary_percentile, Some(97));
+        assert_eq!(resolved.primary_clear_count, Some(8));
+        assert!(!resolved.hidden);
+    }
+
+    #[test]
+    fn resolve_parse_data_preserves_hidden_fallback_policy_even_when_report_parse_is_older() {
+        let plugin_fetched_at = Utc::now();
+        let report_updated_at = plugin_fetched_at - TimeDelta::try_hours(1).unwrap();
+        let plugin = zone_cache_at(
+            plugin_fetched_at,
+            true,
+            false,
+            HashMap::from([("123".to_string(), encounter(99.0, None, Some(9)))]),
+        );
+        let fallback = HashMap::from([("123".to_string(), encounter(84.2, Some(7.0), Some(2)))]);
+
+        let resolved = resolve_parse_data(
+            Some(&plugin),
+            Some(&fallback),
+            Some(report_updated_at),
+            123,
+            None,
+        );
+
+        assert_eq!(resolved.source, ParseSource::ReportParse);
+        assert_eq!(resolved.primary_percentile, Some(84));
+        assert!(resolved.originally_hidden);
+        assert!(!resolved.hidden);
     }
 
     #[test]
@@ -324,7 +448,7 @@ mod tests {
             HashMap::from([("123".to_string(), encounter(99.9, None, Some(1)))]),
         );
 
-        let resolved = resolve_parse_data(Some(&plugin), None, 123, None);
+        let resolved = resolve_parse_data(Some(&plugin), None, None, 123, None);
 
         assert_eq!(resolved.primary_percentile, Some(99));
         assert_eq!(resolved.primary_color_class, "parse-pink");
