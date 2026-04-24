@@ -8,8 +8,10 @@ use std::{
     cmp::Ordering as CmpOrdering,
     collections::{HashMap, HashSet},
     convert::Infallible,
+    future::Future,
     net::SocketAddr,
     sync::{atomic::Ordering as AtomicOrdering, Arc},
+    time::Duration,
 };
 use uuid::Uuid;
 use warp::{
@@ -30,6 +32,43 @@ use crate::sestring_ext::SeStringExt;
 use crate::{
     ffxiv::Language, template::listings::ListingsTemplate, template::stats::StatsTemplate,
 };
+
+const FFLOGS_JOB_MODE_HEADER: &str = "x-rpf-fflogs-job-mode";
+const FFLOGS_EXACT_ONLY_JOB_MODE: &str = "exact-only";
+const LISTINGS_PLAYER_LOOKUP_TIMEOUT: Duration = Duration::from_millis(1_500);
+const LISTINGS_PARSE_DOC_LOOKUP_TIMEOUT: Duration = Duration::from_millis(1_500);
+const LISTINGS_REPORT_PARSE_LOOKUP_TIMEOUT: Duration = Duration::from_millis(1_500);
+
+async fn bounded_listing_lookup<T, Fut>(lookup: &'static str, timeout: Duration, future: Fut) -> T
+where
+    T: Default,
+    Fut: Future<Output = anyhow::Result<T>>,
+{
+    match tokio::time::timeout(timeout, future).await {
+        Ok(Ok(value)) => value,
+        Ok(Err(error)) => {
+            tracing::warn!(lookup, error = ?error, "listing enrichment lookup failed");
+            T::default()
+        }
+        Err(_) => {
+            tracing::warn!(
+                lookup,
+                timeout_ms = timeout.as_millis(),
+                "listing enrichment lookup timed out"
+            );
+            T::default()
+        }
+    }
+}
+
+fn fflogs_exact_home_world_only(headers: &HeaderMap) -> bool {
+    headers
+        .get(FFLOGS_JOB_MODE_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .map(|value| value.eq_ignore_ascii_case(FFLOGS_EXACT_ONLY_JOB_MODE))
+        .unwrap_or(false)
+}
 
 fn resolve_member_player(
     players: &HashMap<u64, crate::player::Player>,
@@ -244,20 +283,25 @@ pub(crate) async fn build_listings_template(
             all_content_ids.sort_unstable();
             all_content_ids.dedup();
 
-            // Fetch players
-            let players_list =
-                get_players_by_content_ids(state.players_collection(), &all_content_ids)
-                    .await
-                    .unwrap_or_default();
+            // Fetch players; if enrichment is slow, keep the listings visible with fallbacks.
+            let players_list: Vec<crate::player::Player> = bounded_listing_lookup(
+                "players",
+                LISTINGS_PLAYER_LOOKUP_TIMEOUT,
+                get_players_by_content_ids(state.players_collection(), &all_content_ids),
+            )
+            .await;
             let players: HashMap<u64, crate::player::Player> = players_list
                 .into_iter()
                 .map(|p| (p.content_id, p))
                 .collect();
 
-            // Optimisation: Pre-fetch all parse docs for all visible players
-            let all_parse_docs = get_parse_docs(state.parse_collection(), &all_content_ids)
-                .await
-                .unwrap_or_default();
+            // Optimisation: Pre-fetch all parse docs for all visible players.
+            let all_parse_docs: HashMap<u64, ParseCacheDoc> = bounded_listing_lookup(
+                "parse docs",
+                LISTINGS_PARSE_DOC_LOOKUP_TIMEOUT,
+                get_parse_docs(state.parse_collection(), &all_content_ids),
+            )
+            .await;
             let mut report_parse_requests: HashMap<
                 String,
                 Vec<crate::mongo::ReportParseIdentityKey>,
@@ -319,20 +363,29 @@ pub(crate) async fn build_listings_template(
                 }
             }
 
-            let mut all_report_parse_summaries: HashMap<
+            let report_parse_summary_collection = state.report_parse_summary_collection();
+            let all_report_parse_summaries: HashMap<
                 String,
                 HashMap<crate::mongo::ReportParseIdentityKey, crate::mongo::ReportParseZoneSummary>,
-            > = HashMap::new();
-            for (zone_key, identities) in report_parse_requests {
-                let summaries = crate::mongo::get_report_parse_summaries_by_zone(
-                    state.report_parse_summary_collection(),
-                    &zone_key,
-                    &identities,
-                )
-                .await
-                .unwrap_or_default();
-                all_report_parse_summaries.insert(zone_key, summaries);
-            }
+            > = bounded_listing_lookup(
+                "report parse summaries",
+                LISTINGS_REPORT_PARSE_LOOKUP_TIMEOUT,
+                async move {
+                    let mut all_report_parse_summaries = HashMap::new();
+                    for (zone_key, identities) in report_parse_requests {
+                        let summaries = crate::mongo::get_report_parse_summaries_by_zone(
+                            report_parse_summary_collection.clone(),
+                            &zone_key,
+                            &identities,
+                        )
+                        .await
+                        .unwrap_or_default();
+                        all_report_parse_summaries.insert(zone_key, summaries);
+                    }
+                    Ok(all_report_parse_summaries)
+                },
+            )
+            .await;
 
             // Match players to listings with job info
             let mut renderable_containers = Vec::new();
@@ -1492,6 +1545,8 @@ pub async fn contribute_fflogs_jobs_handler(
         return Ok(ingest_guard::guard_error_reply(error));
     }
 
+    let exact_home_world_only = fflogs_exact_home_world_only(&headers);
+
     // 1. 현재 활성 파티 목록 가져오기 (1시간 이내)
     let listings = match get_current_listings(state.collection()).await {
         Ok(l) => l,
@@ -1608,6 +1663,10 @@ pub async fn contribute_fflogs_jobs_handler(
                 && crate::ffxiv::WORLDS
                     .get(&(player.home_world as u32))
                     .is_some();
+
+            if !home_world_known && exact_home_world_only {
+                continue;
+            }
 
             let (server, region, candidate_servers) = if home_world_known {
                 let server = player.home_world_name().to_string();
@@ -2059,12 +2118,12 @@ pub async fn contribute_fflogs_leases_abandon_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_detail_update_doc, detail_payload_is_too_large, resolve_member_player,
-        UploadablePartyDetail,
+        build_detail_update_doc, detail_payload_is_too_large, fflogs_exact_home_world_only,
+        resolve_member_player, UploadablePartyDetail,
     };
     use chrono::Utc;
     use std::{collections::HashMap, sync::Arc};
-    use warp::http::{HeaderMap, StatusCode};
+    use warp::http::{HeaderMap, HeaderValue, StatusCode};
 
     async fn test_state_with_signature_required() -> Arc<crate::web::State> {
         let mongo = mongodb::Client::with_uri_str("mongodb://127.0.0.1:27017")
@@ -2186,6 +2245,21 @@ mod tests {
         })
     }
 
+    #[tokio::test]
+    async fn bounded_listing_lookup_returns_default_on_timeout() {
+        let result: Vec<i32> = super::bounded_listing_lookup(
+            "test slow lookup",
+            std::time::Duration::from_millis(5),
+            async {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                Ok::<_, anyhow::Error>(vec![1, 2, 3])
+            },
+        )
+        .await;
+
+        assert!(result.is_empty());
+    }
+
     #[test]
     fn resolve_member_player_uses_existing_player_when_present() {
         let uid = 101u64;
@@ -2208,6 +2282,24 @@ mod tests {
         assert!(!used_fallback);
         assert_eq!(player.name, "Known Player");
         assert_eq!(player.home_world, 73);
+    }
+
+    #[test]
+    fn fflogs_job_mode_header_requests_exact_home_world_only() {
+        let mut headers = HeaderMap::new();
+        assert!(!fflogs_exact_home_world_only(&headers));
+
+        headers.insert(
+            super::FFLOGS_JOB_MODE_HEADER,
+            HeaderValue::from_static(" exact-only "),
+        );
+        assert!(fflogs_exact_home_world_only(&headers));
+
+        headers.insert(
+            super::FFLOGS_JOB_MODE_HEADER,
+            HeaderValue::from_static("candidate-capable"),
+        );
+        assert!(!fflogs_exact_home_world_only(&headers));
     }
 
     #[test]
