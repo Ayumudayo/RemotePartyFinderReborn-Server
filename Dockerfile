@@ -18,6 +18,7 @@ RUN mkdir -p src && \
 # Copy the actual source code
 COPY src ./src
 COPY templates ./templates
+COPY assets ./assets
 
 # Build the actual application.
 # The dependency-cache layer above compiles placeholder crate roots, so after
