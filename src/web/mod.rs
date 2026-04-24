@@ -174,6 +174,15 @@ fn players_content_id_unique_index_model() -> IndexModel {
         .build()
 }
 
+fn report_parse_summary_identity_index_model() -> IndexModel {
+    IndexModel::builder()
+        .keys(mongodb::bson::doc! {
+            "normalized_name": 1,
+            "home_world": 1,
+        })
+        .build()
+}
+
 fn players_content_id_dedupe_pipeline() -> Vec<mongodb::bson::Document> {
     vec![
         mongodb::bson::doc! {
@@ -384,6 +393,11 @@ impl State {
             .await
             .context("could not create parse index")?;
 
+        self.report_parse_summary_collection()
+            .create_index(report_parse_summary_identity_index_model(), None)
+            .await
+            .context("could not create report parse summary identity index")?;
+
         self.ensure_players_content_id_unique_index().await?;
 
         Ok(())
@@ -521,7 +535,8 @@ impl State {
 mod tests {
     use super::{
         duplicate_ids_to_remove, players_content_id_dedupe_pipeline,
-        players_content_id_unique_index_model, PlayerDuplicateGroup,
+        players_content_id_unique_index_model, report_parse_summary_identity_index_model,
+        PlayerDuplicateGroup,
     };
     use mongodb::bson::{doc, oid::ObjectId};
 
@@ -538,6 +553,13 @@ mod tests {
                 .unwrap_or(false),
             true
         );
+    }
+
+    #[test]
+    fn report_parse_summary_identity_index_matches_listing_lookup_shape() {
+        let index = report_parse_summary_identity_index_model();
+
+        assert_eq!(index.keys, doc! { "normalized_name": 1, "home_world": 1 });
     }
 
     #[test]

@@ -1,11 +1,11 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, time::Duration};
 
 use anyhow::Context;
 use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::StreamExt;
 use mongodb::{
     bson::{doc, Document},
-    options::UpdateOptions,
+    options::{FindOptions, UpdateOptions},
     results::UpdateResult,
     Collection,
 };
@@ -15,6 +15,7 @@ use crate::listing_container::{ListingContainer, QueriedListing};
 
 const IDENTITY_UPSERT_MAX_RETRIES: usize = 3;
 const PLAYER_UPSERT_MAX_RETRIES: usize = 3;
+const REPORT_PARSE_SUMMARY_LOOKUP_MAX_TIME: Duration = Duration::from_secs(2);
 
 fn is_valid_world_id(world_id: u16) -> bool {
     world_id < 1_000
@@ -790,33 +791,11 @@ pub async fn get_report_parse_summaries_by_zone(
         return Ok(HashMap::new());
     }
 
-    let mut unique_identities = identities.to_vec();
-    unique_identities.sort_by(|a, b| {
-        a.normalized_name
-            .cmp(&b.normalized_name)
-            .then_with(|| a.home_world.cmp(&b.home_world))
-    });
-    unique_identities.dedup();
-
-    let filters = unique_identities
-        .iter()
-        .map(|identity| {
-            doc! {
-                "normalized_name": &identity.normalized_name,
-                "home_world": identity.home_world as i32,
-            }
-        })
-        .collect::<Vec<_>>();
-
-    let cursor = collection
-        .find(
-            doc! {
-                format!("zones.{}", zone_key): { "$exists": true },
-                "$or": filters,
-            },
-            None,
-        )
-        .await?;
+    let Some(filter) = report_parse_summary_identity_filter(identities) else {
+        return Ok(HashMap::new());
+    };
+    let options = report_parse_summary_find_options(zone_key);
+    let cursor = collection.find(filter, Some(options)).await?;
 
     let docs = cursor
         .filter_map(async |result| result.ok())
@@ -836,11 +815,50 @@ pub async fn get_report_parse_summaries_by_zone(
     Ok(summaries)
 }
 
+fn report_parse_summary_identity_filter(identities: &[ReportParseIdentityKey]) -> Option<Document> {
+    let mut unique_identities = identities.to_vec();
+    unique_identities.sort_by(|a, b| {
+        a.normalized_name
+            .cmp(&b.normalized_name)
+            .then_with(|| a.home_world.cmp(&b.home_world))
+    });
+    unique_identities.dedup();
+    if unique_identities.is_empty() {
+        return None;
+    }
+
+    let filters = unique_identities
+        .iter()
+        .map(|identity| {
+            doc! {
+                "normalized_name": &identity.normalized_name,
+                "home_world": identity.home_world as i32,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Some(doc! { "$or": filters })
+}
+
+fn report_parse_summary_find_options(zone_key: &str) -> FindOptions {
+    FindOptions::builder()
+        .projection(doc! {
+            "normalized_name": 1,
+            "display_name": 1,
+            "home_world": 1,
+            "updated_at": 1,
+            format!("zones.{}", zone_key): 1,
+        })
+        .max_time(REPORT_PARSE_SUMMARY_LOOKUP_MAX_TIME)
+        .build()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         build_identity_compare_and_set_filter, build_identity_upsert_update,
-        build_player_upsert_documents, is_duplicate_key_error, PreparedPlayerUpsert,
+        build_player_upsert_documents, is_duplicate_key_error, report_parse_summary_find_options,
+        report_parse_summary_identity_filter, PreparedPlayerUpsert,
     };
     use chrono::Utc;
     use mongodb::bson::doc;
@@ -953,5 +971,43 @@ mod tests {
         ));
 
         assert!(is_duplicate_key_error(&error));
+    }
+
+    #[test]
+    fn report_parse_summary_filter_targets_identity_index_only() {
+        let identities = vec![
+            crate::report_parse::ReportParseIdentityKey::new("Alice Example", 74),
+            crate::report_parse::ReportParseIdentityKey::new("Alice Example", 74),
+            crate::report_parse::ReportParseIdentityKey::new("Bob Example", 80),
+        ];
+
+        let filter = report_parse_summary_identity_filter(&identities)
+            .expect("non-empty identities should produce a filter");
+
+        assert_eq!(
+            filter,
+            doc! {
+                "$or": [
+                    { "normalized_name": "alice example", "home_world": 74i32 },
+                    { "normalized_name": "bob example", "home_world": 80i32 },
+                ],
+            }
+        );
+        assert!(!filter.contains_key("zones.73:101:1"));
+    }
+
+    #[test]
+    fn report_parse_summary_find_options_project_requested_zone_and_timeout() {
+        let options = report_parse_summary_find_options("73:101:1");
+        let projection = options
+            .projection
+            .expect("summary query should project only required fields");
+
+        assert_eq!(projection.get_i32("normalized_name").unwrap(), 1);
+        assert_eq!(projection.get_i32("display_name").unwrap(), 1);
+        assert_eq!(projection.get_i32("home_world").unwrap(), 1);
+        assert_eq!(projection.get_i32("updated_at").unwrap(), 1);
+        assert_eq!(projection.get_i32("zones.73:101:1").unwrap(), 1);
+        assert!(options.max_time.is_some());
     }
 }
