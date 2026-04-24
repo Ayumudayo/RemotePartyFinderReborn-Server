@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "scripts": {
+    "test:listings-live": "playwright test scripts/listings-live-refresh.spec.mjs --reporter=line --output=output/playwright-test-results"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.1"
+  }
+}

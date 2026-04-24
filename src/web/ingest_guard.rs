@@ -1,19 +1,19 @@
 use std::{net::SocketAddr, sync::Arc};
 
 use base64::{
-    URL_SAFE_NO_PAD, decode_config as base64_decode_config, encode as base64_encode,
-    encode_config as base64_encode_config,
+    decode_config as base64_decode_config, encode as base64_encode,
+    encode_config as base64_encode_config, URL_SAFE_NO_PAD,
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use hmac::{Hmac, Mac};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
 use warp::{
-    Reply,
     http::{HeaderMap, StatusCode},
+    Reply,
 };
 
-use super::{IngestRateKey, IngestRateWindow, IngestRateLimits, State};
+use super::{IngestRateKey, IngestRateLimits, IngestRateWindow, State};
 
 const WINDOW_SECONDS: i64 = 60;
 
@@ -146,7 +146,8 @@ pub fn guard_error_reply(error: GuardError) -> warp::reply::Response {
             retry_after_seconds,
         } => {
             let base = warp::reply::with_status("too many requests", StatusCode::TOO_MANY_REQUESTS);
-            warp::reply::with_header(base, "Retry-After", retry_after_seconds.to_string()).into_response()
+            warp::reply::with_header(base, "Retry-After", retry_after_seconds.to_string())
+                .into_response()
         }
     }
 }
@@ -185,7 +186,8 @@ fn verify_signature(
 
     let timestamp_raw = header_value(headers, "x-rpf-timestamp")
         .ok_or(GuardError::Unauthorized("missing timestamp"))?;
-    let nonce = header_value(headers, "x-rpf-nonce").ok_or(GuardError::Unauthorized("missing nonce"))?;
+    let nonce =
+        header_value(headers, "x-rpf-nonce").ok_or(GuardError::Unauthorized("missing nonce"))?;
     let signature = header_value(headers, "x-rpf-signature")
         .ok_or(GuardError::Unauthorized("missing signature"))?;
 
@@ -199,7 +201,10 @@ fn verify_signature(
         return Err(GuardError::Forbidden("timestamp skew exceeded"));
     }
 
-    let payload = format!("{}\n{}\n{}\n{}\n{}", method, path, timestamp_raw, nonce, client_id);
+    let payload = format!(
+        "{}\n{}\n{}\n{}\n{}",
+        method, path, timestamp_raw, nonce, client_id
+    );
     let expected = compute_signature(&state.ingest_security.shared_secret, &payload)
         .map_err(|_| GuardError::Unauthorized("signature setup invalid"))?;
 
@@ -210,8 +215,13 @@ fn verify_signature(
     Ok(())
 }
 
-async fn enforce_nonce(state: &Arc<State>, headers: &HeaderMap, client_id: &str) -> Result<(), GuardError> {
-    let nonce = header_value(headers, "x-rpf-nonce").ok_or(GuardError::Unauthorized("missing nonce"))?;
+async fn enforce_nonce(
+    state: &Arc<State>,
+    headers: &HeaderMap,
+    client_id: &str,
+) -> Result<(), GuardError> {
+    let nonce =
+        header_value(headers, "x-rpf-nonce").ok_or(GuardError::Unauthorized("missing nonce"))?;
     let nonce_key = format!("{}:{}", client_id, nonce);
 
     let Some(ttl) = TimeDelta::try_seconds(state.ingest_security.nonce_ttl_seconds) else {
@@ -240,7 +250,9 @@ async fn enforce_rate_limit(
         endpoint: endpoint.key(),
         client_id: request_identity.to_string(),
     };
-    let limit = endpoint.limit_per_minute(&state.ingest_security.rate_limits).max(1);
+    let limit = endpoint
+        .limit_per_minute(&state.ingest_security.rate_limits)
+        .max(1);
 
     let mut windows = state.ingest_rate_windows.write().await;
     let stale_after = TimeDelta::seconds(WINDOW_SECONDS * 2);
@@ -294,9 +306,12 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
     diff == 0
 }
 
-pub fn issue_capability_token(secret: &str, claims: &CapabilityClaims) -> Result<String, GuardError> {
-    let payload_json =
-        serde_json::to_vec(claims).map_err(|_| GuardError::Unauthorized("invalid capability claims"))?;
+pub fn issue_capability_token(
+    secret: &str,
+    claims: &CapabilityClaims,
+) -> Result<String, GuardError> {
+    let payload_json = serde_json::to_vec(claims)
+        .map_err(|_| GuardError::Unauthorized("invalid capability claims"))?;
     let payload = base64_encode_config(payload_json, URL_SAFE_NO_PAD);
     let signature = compute_capability_signature(secret, &payload)
         .map_err(|_| GuardError::Unauthorized("capability setup invalid"))?;
@@ -364,7 +379,10 @@ pub fn require_capability(
     scope: CapabilityScope,
     resource_id: Option<&str>,
 ) -> Result<CapabilityClaims, GuardError> {
-    if !state.ingest_security.require_capabilities_for_protected_endpoints {
+    if !state
+        .ingest_security
+        .require_capabilities_for_protected_endpoints
+    {
         return Ok(CapabilityClaims::new(
             client_id.to_string(),
             scope,
@@ -403,8 +421,8 @@ mod tests {
     use warp::http::{HeaderMap, HeaderValue};
 
     use super::{
-        CapabilityClaims, CapabilityScope, GuardError, extract_request_identity,
-        issue_capability_token, validate_capability_token,
+        extract_request_identity, issue_capability_token, validate_capability_token,
+        CapabilityClaims, CapabilityScope, GuardError,
     };
 
     #[test]
@@ -453,17 +471,26 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(matches!(error, GuardError::Forbidden("capability resource mismatch")));
+        assert!(matches!(
+            error,
+            GuardError::Forbidden("capability resource mismatch")
+        ));
     }
 
     #[test]
     fn request_identity_prefers_remote_ip_over_client_id_header() {
         let mut headers = HeaderMap::new();
-        headers.insert("x-rpf-client-id", HeaderValue::from_static("user-provided-id"));
+        headers.insert(
+            "x-rpf-client-id",
+            HeaderValue::from_static("user-provided-id"),
+        );
 
         let identity = extract_request_identity(
             &headers,
-            Some(SocketAddr::new(IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)), 4321)),
+            Some(SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9)),
+                4321,
+            )),
         );
 
         assert_eq!(identity, "ip:10.0.0.9");

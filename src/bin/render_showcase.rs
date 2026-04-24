@@ -6,16 +6,14 @@ const DIRECT_ASSET_FILES: &[&str] = &[
     "listings.css",
     "common.js",
     "translations.js",
+    "listing-data.js",
     "listings.js",
     "minireset.css",
     "icons.svg",
 ];
 
-const ALIAS_ASSET_FILES: &[(&str, &str)] = &[
-    ("pico.min.css", "pico.css"),
-    ("list.min.js", "list.js"),
-    ("d3.v7.min.js", "d3.js"),
-];
+const ALIAS_ASSET_FILES: &[(&str, &str)] =
+    &[("pico.min.css", "pico.css"), ("d3.v7.min.js", "d3.js")];
 
 fn copy_file(from: &Path, to: &Path) -> anyhow::Result<()> {
     if let Some(parent) = to.parent() {
@@ -82,12 +80,12 @@ mod tests {
     fn rewrite_asset_urls_uses_relative_asset_paths() {
         let original = r#"
             <link rel="stylesheet" href="/assets/pico.css">
-            <script src="/assets/list.js"></script>
+            <script src="/assets/listings.js?v=12"></script>
         "#;
         let rewritten = rewrite_asset_urls(original);
 
         assert!(rewritten.contains(r#"href="./assets/pico.css""#));
-        assert!(rewritten.contains(r#"src="./assets/list.js""#));
+        assert!(rewritten.contains(r#"src="./assets/listings.js?v=12""#));
         assert!(!rewritten.contains(r#""/assets/"#));
     }
 
@@ -104,7 +102,7 @@ mod tests {
         let written_html =
             fs::read_to_string(&output).expect("showcase html should exist after bundling");
         assert!(written_html.contains(r#"href="./assets/pico.css""#));
-        assert!(written_html.contains(r#"src="./assets/list.js""#));
+        assert!(written_html.contains(r#"src="./assets/listings.js?v=12""#));
         assert!(written_html.contains(r#"./assets/icons.svg#PLD"#));
 
         let assets_dir = output

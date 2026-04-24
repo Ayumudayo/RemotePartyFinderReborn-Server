@@ -113,6 +113,10 @@ fn default_monitor_snapshot_interval_seconds() -> u64 {
     0
 }
 
+fn default_listings_revision_coalesce_millis() -> u64 {
+    1000
+}
+
 #[derive(Deserialize)]
 pub struct Config {
     pub web: Web,
@@ -178,6 +182,8 @@ pub struct Web {
     pub ingest_capability_detail_ttl_seconds: i64,
     #[serde(default = "default_monitor_snapshot_interval_seconds")]
     pub monitor_snapshot_interval_seconds: u64,
+    #[serde(default = "default_listings_revision_coalesce_millis")]
+    pub listings_revision_coalesce_millis: u64,
 }
 
 #[derive(Deserialize)]

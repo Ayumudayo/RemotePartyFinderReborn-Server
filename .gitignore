@@ -33,9 +33,14 @@ rustc-ice-*.txt
 /.superpowers/
 /output/
 /docs/
+/node_modules/
+/playwright-report/
+/test-results/
 
 # C# generator artifacts
 /RemotePartyFinderReborn-Server.sln
 /generator/obj/
 /generator/bin/
 /generator/.vs/
+
+docs/
