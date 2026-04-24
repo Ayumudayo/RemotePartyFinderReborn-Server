@@ -8,6 +8,26 @@ use chrono::{TimeDelta, Utc};
 use super::State;
 use crate::stats::CachedStatistics;
 
+pub fn spawn_report_parse_summary_index_task(state: Arc<State>) {
+    tokio::task::spawn(async move {
+        match state
+            .report_parse_summary_collection()
+            .create_index(super::report_parse_summary_identity_index_model(), None)
+            .await
+        {
+            Ok(_) => {
+                tracing::info!("report parse summary identity index ensured");
+            }
+            Err(error) => {
+                tracing::warn!(
+                    error = ?error,
+                    "failed to ensure report parse summary identity index"
+                );
+            }
+        }
+    });
+}
+
 pub fn spawn_stats_task(state: Arc<State>) {
     let stats_state = Arc::clone(&state);
     tokio::task::spawn(async move {

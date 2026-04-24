@@ -33,6 +33,7 @@ pub async fn start(config: Arc<Config>) -> Result<()> {
 
     // Background tasks
     background::spawn_stats_task(Arc::clone(&state));
+    background::spawn_report_parse_summary_index_task(Arc::clone(&state));
     background::spawn_fflogs_lease_sweeper_task(Arc::clone(&state));
     background::spawn_listings_revision_publisher_task(Arc::clone(&state));
     background::spawn_monitor_snapshot_task(Arc::clone(&state));
@@ -392,11 +393,6 @@ impl State {
             )
             .await
             .context("could not create parse index")?;
-
-        self.report_parse_summary_collection()
-            .create_index(report_parse_summary_identity_index_model(), None)
-            .await
-            .context("could not create report parse summary identity index")?;
 
         self.ensure_players_content_id_unique_index().await?;
 
