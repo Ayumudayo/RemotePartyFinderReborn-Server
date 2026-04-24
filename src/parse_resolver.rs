@@ -122,11 +122,9 @@ pub fn resolve_parse_data(
             resolved
         }
         Some(zone_cache) if zone_cache.hidden => {
-            if let Some(encounters) =
-                fallback_encounters.filter(|encounters| {
-                    has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
-                })
-            {
+            if let Some(encounters) = fallback_encounters.filter(|encounters| {
+                has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
+            }) {
                 resolved.source = ParseSource::ReportParse;
                 resolved.originally_hidden = true;
 
@@ -152,11 +150,9 @@ pub fn resolve_parse_data(
             }
         }
         None => {
-            if let Some(encounters) =
-                fallback_encounters.filter(|encounters| {
-                    has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
-                })
-            {
+            if let Some(encounters) = fallback_encounters.filter(|encounters| {
+                has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
+            }) {
                 resolved.source = ParseSource::ReportParse;
 
                 let (p1, p1_class, p1_boss, p1_clears) = hydrate_slot(encounters, encounter_id);

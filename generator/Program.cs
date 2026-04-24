@@ -84,6 +84,8 @@ internal class Program
             ["no_listings"] = new() { ["en"] = "No collected listing data available. Please install the plugin to contribute!", ["ja"] = "収集された募集データがありません。プラグインを導入して募集情報を共有してください！", ["de"] = "Keine gesammelten Daten verfügbar. Bitte installiere das Plugin, um beizutragen!", ["fr"] = "Aucune donnée collectée disponible. Veuillez installer le plugin pour contribuer !" },
             ["no_members"] = new() { ["en"] = "No information available for other members", ["ja"] = "他メンバーの情報がありません", ["de"] = "Keine Informationen zu anderen Mitgliedern verfügbar", ["fr"] = "Aucune information disponible pour les autres membres" },
             ["no_filter_results"] = new() { ["en"] = "No results found matching your filters", ["ja"] = "条件に一致する募集が見つかりませんでした", ["de"] = "Keine Ergebnisse für deine Filter gefunden", ["fr"] = "Aucun résultat ne correspond à vos filtres" },
+            ["loading_listings"] = new() { ["en"] = "Loading listings...", ["ja"] = "募集を読み込み中...", ["de"] = "Suche wird geladen...", ["fr"] = "Chargement des recrutements..." },
+            ["listings_refresh_failed"] = new() { ["en"] = "Unable to load listings. Retrying...", ["ja"] = "募集を読み込めませんでした。再試行しています...", ["de"] = "Suche konnte nicht geladen werden. Neuer Versuch...", ["fr"] = "Impossible de charger les recrutements. Nouvelle tentative..." },
 
             // Time
             ["time_in"] = new() { ["en"] = "in", ["ja"] = "後", ["de"] = "in", ["fr"] = "dans" },
@@ -175,6 +177,8 @@ internal class Program
         AppendEntry("no_listings");
         AppendEntry("no_members");
         AppendEntry("no_filter_results");
+        AppendEntry("loading_listings");
+        AppendEntry("listings_refresh_failed");
 
         sb.Append("    // 시간 표시 관련 번역 (i18n)\n");
         AppendEntry("time_in");

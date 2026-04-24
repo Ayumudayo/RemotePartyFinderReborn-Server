@@ -137,6 +137,7 @@ fn build_member(
         slot_index,
         party_index,
         party_header: None,
+        identity_fallback: false,
     }
 }
 
@@ -276,15 +277,7 @@ fn build_showcase_listings() -> Vec<RenderableListing> {
         false,
         ParseSource::Plugin,
     );
-    let no_parse = build_parse_display(
-        None,
-        None,
-        false,
-        false,
-        false,
-        false,
-        ParseSource::None,
-    );
+    let no_parse = build_parse_display(None, None, false, false, false, false, ParseSource::None);
 
     let hidden_listing = build_listing(
         9_001,
@@ -585,7 +578,10 @@ mod tests {
 
     #[test]
     fn showcase_output_relative_path_is_stable() {
-        assert_eq!(showcase_output_relative_path(), "output/showcase/listings.html");
+        assert_eq!(
+            showcase_output_relative_path(),
+            "output/showcase/listings.html"
+        );
     }
 
     #[test]
@@ -596,9 +592,8 @@ mod tests {
         assert!(fallback_row.contains(r#"class="member-job""#));
         assert!(fallback_row.contains(r#"class="member-parse""#));
         assert!(fallback_row.contains(r#"class="member-tags""#));
-        assert!(fallback_row.contains(
-            r#"class="tag tag-hidden" title="FFLogs: Originally hidden player">HID"#
-        ));
+        assert!(fallback_row
+            .contains(r#"class="tag tag-hidden" title="FFLogs: Originally hidden player">HID"#));
         assert!(!fallback_row.contains(">RP</span>"));
         assert!(fallback_row.contains(r#"class="member-link-slot""#));
     }
@@ -642,9 +637,9 @@ mod tests {
         assert!(fallback_row.contains(r#"class="tag tag-clear" title="Clears: 5">✅5</span>"#));
 
         let boss_hp_row = member_row_fragment(&html, "Unparsed Monk");
-        assert!(boss_hp_row.contains(
-            r#"class="tag tag-boss" title="Final Boss HP: 17%">17%</span>"#
-        ));
+        assert!(
+            boss_hp_row.contains(r#"class="tag tag-boss" title="Final Boss HP: 17%">17%</span>"#)
+        );
     }
 
     #[test]
@@ -656,13 +651,15 @@ mod tests {
         assert!(!hidden_creator.contains(r#"class="tag tag-hidden" title="FFLogs: Hidden">HID"#));
 
         let fallback_creator = creator_row_fragment(&html, "Section 2: HID fallback and clears");
-        assert!(fallback_creator.contains(
-            r#"class="tag tag-hidden" title="FFLogs: Originally hidden player">HID"#
-        ));
+        assert!(fallback_creator
+            .contains(r#"class="tag tag-hidden" title="FFLogs: Originally hidden player">HID"#));
         assert!(!fallback_creator.contains(">RP</span>"));
 
-        let estimated_creator = creator_row_fragment(&html, "Section 3: Estimated match and boss HP");
-        assert!(estimated_creator.contains(r#"class="est" title="Estimated match (may be wrong)">?"#));
+        let estimated_creator =
+            creator_row_fragment(&html, "Section 3: Estimated match and boss HP");
+        assert!(
+            estimated_creator.contains(r#"class="est" title="Estimated match (may be wrong)">?"#)
+        );
     }
 
     #[test]

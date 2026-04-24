@@ -24,6 +24,16 @@ pub fn router(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .boxed()
 }
 
+fn language_codes() -> BoxedFilter<(Option<String>,)> {
+    warp::cookie::<String>("lang")
+        .or(warp::header::<String>("accept-language"))
+        .unify()
+        .map(Some)
+        .or(warp::any().map(|| None))
+        .unify()
+        .boxed()
+}
+
 fn index() -> BoxedFilter<(impl Reply,)> {
     let route = warp::path::end().map(|| warp::redirect(Uri::from_static("/listings")));
     warp::get().and(route).boxed()
@@ -32,14 +42,7 @@ fn index() -> BoxedFilter<(impl Reply,)> {
 fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     let route = warp::path("listings")
         .and(warp::path::end())
-        .and(
-            warp::cookie::<String>("lang")
-                .or(warp::header::<String>("accept-language"))
-                .unify()
-                .map(Some)
-                .or(warp::any().map(|| None))
-                .unify(),
-        )
+        .and(language_codes())
         .and_then(move |codes: Option<String>| {
             handlers::listings_handler(Arc::clone(&state), codes)
         });
@@ -50,14 +53,7 @@ fn listings(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
 fn stats(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     let route = warp::path("stats")
         .and(warp::path::end())
-        .and(
-            warp::cookie::<String>("lang")
-                .or(warp::header::<String>("accept-language"))
-                .unify()
-                .map(Some)
-                .or(warp::any().map(|| None))
-                .unify(),
-        )
+        .and(language_codes())
         .and_then(move |codes: Option<String>| {
             handlers::stats_handler(Arc::clone(&state), codes, false)
         });
@@ -69,14 +65,7 @@ fn stats_seven_days(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     let route = warp::path("stats")
         .and(warp::path("7days"))
         .and(warp::path::end())
-        .and(
-            warp::cookie::<String>("lang")
-                .or(warp::header::<String>("accept-language"))
-                .unify()
-                .map(Some)
-                .or(warp::any().map(|| None))
-                .unify(),
-        )
+        .and(language_codes())
         .and_then(move |codes: Option<String>| {
             handlers::stats_handler(Arc::clone(&state), codes, true)
         });
@@ -261,13 +250,13 @@ fn assets() -> BoxedFilter<(impl Reply,)> {
                 .or(minireset())
                 .or(common_css())
                 .or(listings_css())
+                .or(listing_data_js())
                 .or(listings_js())
                 .or(stats_css())
                 .or(stats_js())
                 .or(d3())
                 .or(pico())
                 .or(common_js())
-                .or(list_js())
                 .or(translations_js()),
         )
         .boxed()
@@ -308,6 +297,13 @@ fn listings_js() -> BoxedFilter<(impl Reply,)> {
         .boxed()
 }
 
+fn listing_data_js() -> BoxedFilter<(impl Reply,)> {
+    warp::path("listing-data.js")
+        .and(warp::path::end())
+        .and(warp::fs::file("./assets/listing-data.js"))
+        .boxed()
+}
+
 fn stats_css() -> BoxedFilter<(impl Reply,)> {
     warp::path("stats.css")
         .and(warp::path::end())
@@ -340,13 +336,6 @@ fn common_js() -> BoxedFilter<(impl Reply,)> {
     warp::path("common.js")
         .and(warp::path::end())
         .and(warp::fs::file("./assets/common.js"))
-        .boxed()
-}
-
-fn list_js() -> BoxedFilter<(impl Reply,)> {
-    warp::path("list.js")
-        .and(warp::path::end())
-        .and(warp::fs::file("./assets/list.min.js"))
         .boxed()
 }
 

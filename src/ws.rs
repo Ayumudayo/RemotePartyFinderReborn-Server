@@ -1,9 +1,9 @@
-use crate::listing::PartyFinderListing;
 use crate::web::State;
 use futures_util::stream::{SplitSink, SplitStream};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+use tokio::sync::broadcast::error::RecvError;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tokio::task::{AbortHandle, JoinHandle};
 use warp::ws::{Message, WebSocket};
@@ -11,7 +11,7 @@ use warp::ws::{Message, WebSocket};
 pub struct WsApiClient {
     state: Arc<State>,
     outbound: UnboundedSender<OutboundApiMessage>,
-    listings: Option<LiveHandle>,
+    listing_changes: Option<LiveHandle>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -28,14 +28,14 @@ enum InboundApiMessage {
 enum OutboundApiMessage {
     Subscribed { channel: MessageChannel },
     Unsubscribed { channel: MessageChannel },
-    Listings { listings: Arc<[PartyFinderListing]> },
+    ListingsRevisionChanged { revision: u64 },
     Err { message: String },
 }
 
 #[derive(Serialize, Deserialize, Copy, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 enum MessageChannel {
-    Listings,
+    ListingChanges,
 }
 
 impl WsApiClient {
@@ -43,9 +43,9 @@ impl WsApiClient {
         match msg {
             InboundApiMessage::Subscribe { channel } => {
                 match channel {
-                    MessageChannel::Listings => {
-                        self.listings = Some(
-                            tokio::spawn(Self::listings_task(
+                    MessageChannel::ListingChanges => {
+                        self.listing_changes = Some(
+                            tokio::spawn(Self::listing_changes_task(
                                 self.state.clone(),
                                 self.outbound.clone(),
                             ))
@@ -61,8 +61,8 @@ impl WsApiClient {
             }
             InboundApiMessage::Unsubscribe { channel } => {
                 match channel {
-                    MessageChannel::Listings => {
-                        self.listings = None; // drops the task.
+                    MessageChannel::ListingChanges => {
+                        self.listing_changes = None; // drops the task.
                     }
                 }
 
@@ -81,7 +81,7 @@ impl WsApiClient {
         let mut client = Self {
             state,
             outbound: outbound_sender,
-            listings: None,
+            listing_changes: None,
         };
 
         let send_task = Self::send_task(&mut outbound_receiver, &mut ws_sender);
@@ -130,11 +130,24 @@ impl WsApiClient {
         }
     }
 
-    async fn listings_task(state: Arc<State>, sender: UnboundedSender<OutboundApiMessage>) {
-        let mut receiver = state.listings_channel.subscribe();
+    async fn listing_changes_task(state: Arc<State>, sender: UnboundedSender<OutboundApiMessage>) {
+        let mut receiver = state.listings_change_channel.subscribe();
+        let _ = sender.send(OutboundApiMessage::ListingsRevisionChanged {
+            revision: state.current_listings_revision(),
+        });
 
-        while let Ok(listings) = receiver.recv().await {
-            let _ = sender.send(OutboundApiMessage::Listings { listings });
+        loop {
+            match receiver.recv().await {
+                Ok(revision) => {
+                    let _ = sender.send(OutboundApiMessage::ListingsRevisionChanged { revision });
+                }
+                Err(RecvError::Lagged(_)) => {
+                    let _ = sender.send(OutboundApiMessage::ListingsRevisionChanged {
+                        revision: state.current_listings_revision(),
+                    });
+                }
+                Err(RecvError::Closed) => break,
+            }
         }
     }
 }

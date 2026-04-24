@@ -1,7 +1,7 @@
+use crate::listing::{DutyCategory, DutyType};
+use serde::Serialize;
 use std::borrow::Cow;
 use std::{cmp::Ordering, str::FromStr};
-use serde::Serialize;
-use crate::listing::{DutyCategory, DutyType};
 
 pub use self::{
     auto_translate::AUTO_TRANSLATE, duties::DUTIES, jobs::JOBS, roulettes::ROULETTES,
@@ -185,7 +185,7 @@ pub fn duty_name<'a>(
                 Language::Japanese => "G.A.T.E.",
                 Language::German => "GATEs",
                 Language::French => "JACTA",
-            })
+            });
         }
         (_, DutyCategory::GoldSaucer) if duty >= 12 && duty <= 19 => {
             // in the sheet, the order is sagolii, del sol, tranquil, random
@@ -226,7 +226,9 @@ pub fn duty_name<'a>(
 
     tracing::debug!(
         "unknown type/category/duty: {:?}/{:?}/{}",
-        duty_type, category, duty
+        duty_type,
+        category,
+        duty
     );
     Cow::from(format!("{:?}", category))
 }

@@ -840,8 +840,7 @@ pub async fn get_report_parse_summaries_by_zone(
 mod tests {
     use super::{
         build_identity_compare_and_set_filter, build_identity_upsert_update,
-        build_player_upsert_documents,
-        is_duplicate_key_error, PreparedPlayerUpsert,
+        build_player_upsert_documents, is_duplicate_key_error, PreparedPlayerUpsert,
     };
     use chrono::Utc;
     use mongodb::bson::doc;
@@ -863,7 +862,10 @@ mod tests {
 
         assert_eq!(set_doc.get_datetime("last_seen").unwrap().to_chrono(), now);
         assert_eq!(
-            set_doc.get_datetime("identity_observed_at").unwrap().to_chrono(),
+            set_doc
+                .get_datetime("identity_observed_at")
+                .unwrap()
+                .to_chrono(),
             now
         );
         assert_eq!(set_on_insert_doc.get_i64("content_id").unwrap(), 1001);
@@ -904,7 +906,10 @@ mod tests {
         let filter = build_identity_compare_and_set_filter(7007, Some(&existing));
 
         assert_eq!(filter.get_i64("content_id").unwrap(), 7007);
-        assert_eq!(filter.get_datetime("last_seen").unwrap().to_chrono(), last_seen);
+        assert_eq!(
+            filter.get_datetime("last_seen").unwrap().to_chrono(),
+            last_seen
+        );
         assert_eq!(filter.get_array("$or").unwrap().len(), 2);
     }
 

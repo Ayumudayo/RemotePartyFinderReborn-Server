@@ -55,7 +55,11 @@ impl PartyFinderListing {
         for index in 0..limit {
             let detail_job = self.member_jobs.get(index).copied().unwrap_or(0);
             let present_job = self.jobs_present.get(index).copied().unwrap_or(0);
-            display_jobs.push(if detail_job != 0 { detail_job } else { present_job });
+            display_jobs.push(if detail_job != 0 {
+                detail_job
+            } else {
+                present_job
+            });
         }
 
         display_jobs
@@ -83,7 +87,9 @@ impl PartyFinderListing {
             let entry = match crate::ffxiv::JOBS.get(&u32::from(present_job)).copied() {
                 Some(class_job) => Ok(class_job),
                 None => match self.slots.get(index) {
-                    Some(fallback_slot) => Err((fallback_slot.html_classes(), fallback_slot.codes())),
+                    Some(fallback_slot) => {
+                        Err((fallback_slot.html_classes(), fallback_slot.codes()))
+                    }
                     None => Err((String::new(), String::new())),
                 },
             };
@@ -250,8 +256,8 @@ mod tests {
     use sestring::SeString;
 
     use super::{
-        ConditionFlags, DutyCategory, DutyFinderSettingsFlags, DutyType, JobFlags,
-        LootRuleFlags, ObjectiveFlags, PartyFinderListing, PartyFinderSlot, SearchAreaFlags,
+        ConditionFlags, DutyCategory, DutyFinderSettingsFlags, DutyType, JobFlags, LootRuleFlags,
+        ObjectiveFlags, PartyFinderListing, PartyFinderSlot, SearchAreaFlags,
     };
 
     fn sample_listing() -> PartyFinderListing {
@@ -308,8 +314,7 @@ mod tests {
                 1, 0, 2, 0, 3, 0, 4, 0, 5, 0, 0, 0, 0, 0, 0, 0, 0, 0, 6, 7, 8, 9, 0, 10,
             ],
             member_jobs: vec![
-                37, 0, 24, 0, 22, 0, 31, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 28, 34, 22, 0,
-                38,
+                37, 0, 24, 0, 22, 0, 31, 0, 20, 0, 0, 0, 0, 0, 0, 0, 0, 0, 33, 28, 34, 22, 0, 38,
             ],
             leader_content_id: 5,
         }

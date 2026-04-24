@@ -1,32 +1,29 @@
-use std::{
-    collections::HashMap,
-    sync::{
-        Arc,
-        atomic::AtomicU64,
-    },
-    time::Duration,
-};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use futures_util::StreamExt;
-use mongodb::{
-    options::IndexOptions,
-    Client as MongoClient, Collection, IndexModel,
+use mongodb::{options::IndexOptions, Client as MongoClient, Collection, IndexModel};
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering},
+        Arc,
+    },
+    time::Duration,
 };
-use uuid::Uuid;
 use tokio::sync::broadcast::Sender;
-use tokio::sync::RwLock;
+use tokio::sync::{Notify, RwLock};
+use uuid::Uuid;
+use warp::hyper::body::Bytes;
 
 use crate::config::Config;
-use crate::listing::PartyFinderListing;
 use crate::listing_container::ListingContainer;
 use crate::player::Player;
 use crate::stats::CachedStatistics;
 
-pub mod routes;
-pub mod handlers;
 pub mod background;
+pub mod handlers;
 pub mod ingest_guard;
+pub mod routes;
 
 pub const FFLOGS_LEASE_TTL_MINUTES: i64 = 3;
 pub const FFLOGS_LEASE_SWEEP_INTERVAL_SECONDS: u64 = 30;
@@ -37,17 +34,25 @@ pub async fn start(config: Arc<Config>) -> Result<()> {
     // Background tasks
     background::spawn_stats_task(Arc::clone(&state));
     background::spawn_fflogs_lease_sweeper_task(Arc::clone(&state));
+    background::spawn_listings_revision_publisher_task(Arc::clone(&state));
     background::spawn_monitor_snapshot_task(Arc::clone(&state));
 
     tracing::info!("listening at {}", config.web.host);
-    warp::serve(routes::router(state)).run(config.web.host).await;
+    warp::serve(routes::router(state))
+        .run(config.web.host)
+        .await;
     Ok(())
 }
 
 pub struct State {
     pub mongo: MongoClient,
     pub stats: RwLock<Option<CachedStatistics>>,
-    pub listings_channel: Sender<Arc<[PartyFinderListing]>>,
+    pub listings_change_channel: Sender<u64>,
+    pub listings_revision: AtomicU64,
+    pub listings_revision_pending: AtomicBool,
+    pub listings_revision_notify: Notify,
+    pub listings_revision_coalesce_window: Duration,
+    pub listings_snapshot_cache: RwLock<ListingsSnapshotCacheState>,
     pub fflogs_jobs_limit: usize,
     pub fflogs_hidden_cache_ttl_hours: i64,
     pub listing_upsert_concurrency: usize,
@@ -134,6 +139,22 @@ pub struct IngestRateWindow {
     pub count: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct CachedListingsSnapshot {
+    pub revision: u64,
+    pub body: Bytes,
+}
+
+#[derive(Debug, Default)]
+pub enum ListingsSnapshotCacheState {
+    #[default]
+    Empty,
+    Building {
+        notify: Arc<Notify>,
+    },
+    Ready(CachedListingsSnapshot),
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[allow(dead_code)]
 struct PlayerDuplicateGroup {
@@ -199,12 +220,19 @@ impl State {
         let mongo = MongoClient::with_uri_str(&config.mongo.url)
             .await
             .context("could not create mongodb client")?;
-            
-        let (tx, _) = tokio::sync::broadcast::channel(16);
+
+        let (change_tx, _) = tokio::sync::broadcast::channel(64);
         let state = Arc::new(Self {
             mongo,
             stats: Default::default(),
-            listings_channel: tx,
+            listings_change_channel: change_tx,
+            listings_revision: AtomicU64::new(1),
+            listings_revision_pending: AtomicBool::new(false),
+            listings_revision_notify: Notify::new(),
+            listings_revision_coalesce_window: Duration::from_millis(
+                config.web.listings_revision_coalesce_millis.max(1),
+            ),
+            listings_snapshot_cache: Default::default(),
             fflogs_jobs_limit: config.web.fflogs_jobs_limit.max(1),
             fflogs_hidden_cache_ttl_hours: config.web.fflogs_hidden_cache_ttl_hours.max(1),
             listing_upsert_concurrency: config.web.listing_upsert_concurrency.max(1),
@@ -228,7 +256,10 @@ impl State {
                     .ingest_require_capabilities_for_protected_endpoints,
                 capability_secret: if config.web.ingest_capability_secret.trim().is_empty() {
                     let generated = format!("runtime-capability-{}", Uuid::new_v4());
-                    if config.web.ingest_require_capabilities_for_protected_endpoints {
+                    if config
+                        .web
+                        .ingest_require_capabilities_for_protected_endpoints
+                    {
                         tracing::warn!(
                             "web.ingest_capability_secret is empty; generated an ephemeral runtime secret for protected endpoint capabilities"
                         );
@@ -246,12 +277,21 @@ impl State {
                     .ingest_capability_detail_ttl_seconds
                     .max(60),
                 rate_limits: IngestRateLimits {
-                    contribute_per_minute: config.web.ingest_rate_limit_contribute_per_minute.max(1),
+                    contribute_per_minute: config
+                        .web
+                        .ingest_rate_limit_contribute_per_minute
+                        .max(1),
                     multiple_per_minute: config.web.ingest_rate_limit_multiple_per_minute.max(1),
                     players_per_minute: config.web.ingest_rate_limit_players_per_minute.max(1),
                     detail_per_minute: config.web.ingest_rate_limit_detail_per_minute.max(1),
-                    fflogs_jobs_per_minute: config.web.ingest_rate_limit_fflogs_jobs_per_minute.max(1),
-                    fflogs_results_per_minute: config.web.ingest_rate_limit_fflogs_results_per_minute.max(1),
+                    fflogs_jobs_per_minute: config
+                        .web
+                        .ingest_rate_limit_fflogs_jobs_per_minute
+                        .max(1),
+                    fflogs_results_per_minute: config
+                        .web
+                        .ingest_rate_limit_fflogs_results_per_minute
+                        .max(1),
                 },
             },
             ingest_rate_windows: Default::default(),
@@ -295,10 +335,18 @@ impl State {
             .keys(mongodb::bson::doc! {
                 "updated_at": 1,
             })
-            .options(IndexOptions::builder().expire_after(Duration::from_secs(3600 * 2)).build())
+            .options(
+                IndexOptions::builder()
+                    .expire_after(Duration::from_secs(3600 * 2))
+                    .build(),
+            )
             .build();
 
-        if let Err(e) = self.collection().create_index(listings_index_model.clone(), None).await {
+        if let Err(e) = self
+            .collection()
+            .create_index(listings_index_model.clone(), None)
+            .await
+        {
             // Check for IndexOptionsConflict (Error code 85)
             let is_conflict = match &*e.kind {
                 mongodb::error::ErrorKind::Command(cmd_err) => cmd_err.code == 85,
@@ -307,10 +355,14 @@ impl State {
 
             if is_conflict {
                 tracing::debug!("Index option conflict detected for 'updated_at'. Dropping old index and recreating...");
-                self.collection().drop_index("updated_at_1", None).await
+                self.collection()
+                    .drop_index("updated_at_1", None)
+                    .await
                     .context("could not drop conflicting updated_at index")?;
-                
-                self.collection().create_index(listings_index_model, None).await
+
+                self.collection()
+                    .create_index(listings_index_model, None)
+                    .await
                     .context("could not create updated_at index after restart")?;
                 tracing::info!("Index 'updated_at' recreated with new options.");
             } else {
@@ -338,8 +390,11 @@ impl State {
     }
 
     async fn ensure_players_content_id_unique_index(&self) -> Result<()> {
-        let collection = self.players_collection().clone_with_type::<mongodb::bson::Document>();
-        self.dedupe_players_by_content_id(collection.clone()).await?;
+        let collection = self
+            .players_collection()
+            .clone_with_type::<mongodb::bson::Document>();
+        self.dedupe_players_by_content_id(collection.clone())
+            .await?;
 
         let mut has_unique_content_id_index = false;
         let mut existing_indexes = collection
@@ -374,10 +429,9 @@ impl State {
                 continue;
             }
 
-            collection
-                .drop_index(name, None)
-                .await
-                .with_context(|| format!("could not drop non-unique players content_id index '{name}'"))?;
+            collection.drop_index(name, None).await.with_context(|| {
+                format!("could not drop non-unique players content_id index '{name}'")
+            })?;
         }
 
         if !has_unique_content_id_index {
@@ -445,7 +499,21 @@ impl State {
     pub fn report_parse_summary_collection(
         &self,
     ) -> Collection<crate::mongo::ReportParseSummaryDoc> {
-        self.mongo.database("rpf").collection("report_parse_summaries")
+        self.mongo
+            .database("rpf")
+            .collection("report_parse_summaries")
+    }
+
+    pub fn notify_listings_changed(&self, changed_count: usize) {
+        if changed_count > 0 {
+            self.listings_revision_pending
+                .store(true, AtomicOrdering::Relaxed);
+            self.listings_revision_notify.notify_one();
+        }
+    }
+
+    pub fn current_listings_revision(&self) -> u64 {
+        self.listings_revision.load(AtomicOrdering::Relaxed)
     }
 }
 

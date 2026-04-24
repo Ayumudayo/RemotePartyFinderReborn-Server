@@ -222,6 +222,7 @@ pub struct RenderableMember {
     pub slot_index: usize,
     pub party_index: u8,
     pub party_header: Option<&'static str>,
+    pub identity_fallback: bool,
 }
 
 impl RenderableMember {
@@ -248,6 +249,10 @@ impl RenderableMember {
     }
 
     pub fn fflogs_character_url(&self) -> Option<String> {
+        if self.identity_fallback {
+            return None;
+        }
+
         let name = self.player.name.trim();
         if !is_known_member_name(name) {
             return None;
@@ -294,6 +299,7 @@ mod tests {
             slot_index: 0,
             party_index: 0,
             party_header: None,
+            identity_fallback: false,
         }
     }
 
@@ -369,6 +375,14 @@ mod tests {
 
         let placeholder = sample_member("Party Leader", 73);
         assert!(placeholder.fflogs_character_url().is_none());
+    }
+
+    #[test]
+    fn member_link_is_not_generated_for_fallback_identity() {
+        let mut fallback = sample_member("Sayo Shijima", 73);
+        fallback.identity_fallback = true;
+
+        assert!(fallback.fflogs_character_url().is_none());
     }
 
     #[test]
@@ -475,7 +489,10 @@ mod tests {
 
         assert_eq!(hidden_plugin.hidden_rail_tag_label(), None);
         assert_eq!(report_parse_fallback.hidden_rail_tag_label(), Some("HID"));
-        assert_eq!(report_parse_without_hidden_origin.hidden_rail_tag_label(), None);
+        assert_eq!(
+            report_parse_without_hidden_origin.hidden_rail_tag_label(),
+            None
+        );
         assert_eq!(visible_plugin.hidden_rail_tag_label(), None);
         assert_eq!(hidden_plugin.hidden_rail_tag_title(), "FFLogs: Hidden");
         assert_eq!(

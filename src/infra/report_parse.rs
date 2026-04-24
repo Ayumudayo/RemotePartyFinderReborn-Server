@@ -70,7 +70,10 @@ mod tests {
     use crate::fflogs::EncounterParse;
     #[test]
     fn normalize_character_name_trims_and_lowercases() {
-        assert_eq!(normalize_character_name("  Alice Example  "), "alice example");
+        assert_eq!(
+            normalize_character_name("  Alice Example  "),
+            "alice example"
+        );
     }
 
     #[test]
@@ -160,6 +163,9 @@ mod tests {
         let encoded = bson::to_document(&doc).expect("summary should serialize");
 
         assert!(encoded.get("zone_key").is_none());
-        assert!(encoded.get_document("zones").unwrap().contains_key("73:101:1"));
+        assert!(encoded
+            .get_document("zones")
+            .unwrap()
+            .contains_key("73:101:1"));
     }
 }

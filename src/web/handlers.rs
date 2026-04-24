@@ -209,14 +209,14 @@ fn lookup_fflogs_displays(
     )
 }
 
-pub async fn listings_handler(
+pub(crate) async fn build_listings_template(
     state: Arc<State>,
     codes: Option<String>,
-) -> std::result::Result<impl Reply, Infallible> {
+) -> ListingsTemplate {
     let lang = Language::from_codes(codes.as_deref());
 
     let res = get_current_listings(state.collection()).await;
-    Ok(match res {
+    match res {
         Ok(mut containers) => {
             // 단일 정렬로 통합: updated_minute DESC → pf_category DESC → time_left ASC
             containers.sort_by(|a, b| {
@@ -449,6 +449,7 @@ pub async fn listings_handler(
                             } else {
                                 None
                             },
+                            identity_fallback: used_leader_fallback,
                         })
                     })
                     .collect();
@@ -532,6 +533,16 @@ pub async fn listings_handler(
                 lang,
             }
         }
+    }
+}
+
+pub async fn listings_handler(
+    _state: Arc<State>,
+    codes: Option<String>,
+) -> std::result::Result<impl Reply, Infallible> {
+    Ok(ListingsTemplate {
+        containers: Vec::new(),
+        lang: Language::from_codes(codes.as_deref()),
     })
 }
 
@@ -582,8 +593,9 @@ pub async fn contribute_handler(
     }
 
     let upsert_result = insert_listing(state.collection(), &listing).await;
-
-    let _ = state.listings_channel.send(vec![listing].into());
+    if upsert_result.is_ok() {
+        state.notify_listings_changed(1);
+    }
     Ok(format!("{:#?}", upsert_result).into_response())
 }
 
@@ -711,7 +723,18 @@ pub async fn contribute_multiple_handler(
         );
     }
 
-    let _ = state.listings_channel.send(listings.into());
+    if !successful_listing_ids.is_empty() {
+        let successful_listing_ids_set: HashSet<u32> =
+            successful_listing_ids.iter().copied().collect();
+        let changed_listings: Vec<PartyFinderListing> = listings
+            .into_iter()
+            .filter(|listing| successful_listing_ids_set.contains(&listing.id))
+            .collect();
+        if !changed_listings.is_empty() {
+            let changed_count = changed_listings.len();
+            state.notify_listings_changed(changed_count);
+        }
+    }
     let response = ContributeMultipleResponse {
         status: if failed_writes == 0 { "ok" } else { "partial" },
         requested: total,
@@ -817,6 +840,10 @@ pub async fn contribute_players_handler(
                     status,
                     "Processed /contribute/players request with issues"
                 );
+            }
+
+            if report.updated > 0 {
+                state.notify_listings_changed(report.updated);
             }
 
             let response = ContributePlayersResponse {
@@ -949,6 +976,10 @@ pub async fn contribute_character_identity_handler(
                     status,
                     "Processed /contribute/character-identity request with issues"
                 );
+            }
+
+            if report.updated > 0 {
+                state.notify_listings_changed(report.updated);
             }
 
             let response = ContributeCharacterIdentityResponse {
@@ -1327,6 +1358,9 @@ pub async fn contribute_detail_handler(
             } else {
                 "ok"
             };
+            if result.modified_count > 0 {
+                state.notify_listings_changed(result.modified_count as usize);
+            }
             Ok(warp::reply::json(&ContributeDetailResponse {
                 status,
                 matched_count: result.matched_count,
@@ -1872,6 +1906,9 @@ pub async fn contribute_fflogs_results_handler(
             "fflogs results processed",
         );
     }
+    if success_count > 0 {
+        state.notify_listings_changed(success_count);
+    }
 
     let rejected_results_total = submitted_results_total.saturating_sub(accepted_results_total);
     if rejected_results_total > 0 {
@@ -2038,12 +2075,17 @@ mod tests {
         let mongo = mongodb::Client::with_uri_str("mongodb://127.0.0.1:27017")
             .await
             .expect("construct test mongo client");
-        let (tx, _) = tokio::sync::broadcast::channel(1);
+        let (change_tx, _) = tokio::sync::broadcast::channel(1);
 
         Arc::new(crate::web::State {
             mongo,
             stats: Default::default(),
-            listings_channel: tx,
+            listings_change_channel: change_tx,
+            listings_revision: Default::default(),
+            listings_revision_pending: Default::default(),
+            listings_revision_notify: tokio::sync::Notify::new(),
+            listings_revision_coalesce_window: std::time::Duration::from_millis(1),
+            listings_snapshot_cache: Default::default(),
             fflogs_jobs_limit: 1,
             fflogs_hidden_cache_ttl_hours: 24,
             listing_upsert_concurrency: 1,
@@ -2093,12 +2135,17 @@ mod tests {
         let mongo = mongodb::Client::with_uri_str("mongodb://127.0.0.1:27017")
             .await
             .expect("construct test mongo client");
-        let (tx, _) = tokio::sync::broadcast::channel(1);
+        let (change_tx, _) = tokio::sync::broadcast::channel(1);
 
         Arc::new(crate::web::State {
             mongo,
             stats: Default::default(),
-            listings_channel: tx,
+            listings_change_channel: change_tx,
+            listings_revision: Default::default(),
+            listings_revision_pending: Default::default(),
+            listings_revision_notify: tokio::sync::Notify::new(),
+            listings_revision_coalesce_window: std::time::Duration::from_millis(1),
+            listings_snapshot_cache: Default::default(),
             fflogs_jobs_limit: 1,
             fflogs_hidden_cache_ttl_hours: 24,
             listing_upsert_concurrency: 1,
@@ -2374,14 +2421,10 @@ mod tests {
             observed_at: Utc::now() + chrono::TimeDelta::seconds(301),
         }];
 
-        let response = super::contribute_character_identity_handler(
-            state,
-            HeaderMap::new(),
-            None,
-            payload,
-        )
-        .await
-        .unwrap();
+        let response =
+            super::contribute_character_identity_handler(state, HeaderMap::new(), None, payload)
+                .await
+                .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     }
