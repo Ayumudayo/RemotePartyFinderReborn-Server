@@ -1484,6 +1484,73 @@ pub struct ParseResult {
     pub lease_token: String,
 }
 
+fn positive_clear_count(clear_counts: &HashMap<i32, i32>, enc_id: i32) -> Option<u32> {
+    clear_counts
+        .get(&enc_id)
+        .copied()
+        .filter(|value| *value > 0)
+        .map(|value| value as u32)
+}
+
+fn percentile_has_clear_evidence(percentile: f64, clear_count: Option<u32>) -> bool {
+    percentile > 0.0 || (percentile == 0.0 && clear_count.is_some())
+}
+
+fn build_fflogs_result_encounter_map(
+    encounters: HashMap<i32, f64>,
+    boss_percentages: HashMap<i32, f64>,
+    clear_counts: HashMap<i32, i32>,
+) -> HashMap<String, crate::mongo::EncounterParse> {
+    let mut encounter_map = HashMap::new();
+
+    for (enc_id, percentile) in encounters {
+        let boss_percentage = boss_percentages.get(&enc_id).copied().map(|v| v as f32);
+        let clear_count = positive_clear_count(&clear_counts, enc_id);
+
+        if percentile_has_clear_evidence(percentile, clear_count) {
+            encounter_map.insert(
+                enc_id.to_string(),
+                crate::mongo::EncounterParse {
+                    percentile: percentile as f32,
+                    job_id: 0,
+                    boss_percentage,
+                    clear_count,
+                },
+            );
+        } else if let Some(boss_percentage) = boss_percentage {
+            encounter_map.insert(
+                enc_id.to_string(),
+                crate::mongo::EncounterParse {
+                    percentile: -1.0,
+                    job_id: 0,
+                    boss_percentage: Some(boss_percentage),
+                    clear_count,
+                },
+            );
+        }
+    }
+
+    // progress-only 데이터가 들어온 경우도 저장
+    for (enc_id, boss_percentage) in boss_percentages {
+        let key = enc_id.to_string();
+        if encounter_map.contains_key(&key) {
+            continue;
+        }
+        let clear_count = positive_clear_count(&clear_counts, enc_id);
+        encounter_map.insert(
+            key,
+            crate::mongo::EncounterParse {
+                percentile: -1.0,
+                job_id: 0,
+                boss_percentage: Some(boss_percentage as f32),
+                clear_count,
+            },
+        );
+    }
+
+    encounter_map
+}
+
 /// FFLogs lease 즉시 반납 요청 구조체 (Plugin -> Server request)
 #[derive(Debug, serde::Deserialize)]
 pub struct AbandonFflogsLease {
@@ -1869,50 +1936,11 @@ pub async fn contribute_fflogs_results_handler(
 
     for res in accepted_results {
         // ParseResult -> ZoneCache 변환
-        let boss_percentages = res.boss_percentages;
-        let clear_counts = res.clear_counts;
-        let mut encounter_map = HashMap::new();
-
-        for (enc_id, percentile) in res.encounters {
-            let boss_percentage = boss_percentages.get(&enc_id).copied().map(|v| v as f32);
-            let clear_count = clear_counts
-                .get(&enc_id)
-                .copied()
-                .filter(|v| *v > 0)
-                .map(|v| v as u32);
-
-            encounter_map.insert(
-                enc_id.to_string(),
-                crate::mongo::EncounterParse {
-                    percentile: percentile as f32, // f64 -> f32
-                    job_id: 0,
-                    boss_percentage,
-                    clear_count,
-                },
-            );
-        }
-
-        // progress-only 데이터가 들어온 경우도 저장
-        for (enc_id, boss_percentage) in boss_percentages {
-            let key = enc_id.to_string();
-            if encounter_map.contains_key(&key) {
-                continue;
-            }
-            let clear_count = clear_counts
-                .get(&enc_id)
-                .copied()
-                .filter(|v| *v > 0)
-                .map(|v| v as u32);
-            encounter_map.insert(
-                key,
-                crate::mongo::EncounterParse {
-                    percentile: -1.0,
-                    job_id: 0,
-                    boss_percentage: Some(boss_percentage as f32),
-                    clear_count,
-                },
-            );
-        }
+        let encounter_map = build_fflogs_result_encounter_map(
+            res.encounters,
+            res.boss_percentages,
+            res.clear_counts,
+        );
 
         let zone_cache = crate::mongo::ZoneCache {
             fetched_at: chrono::Utc::now(),
@@ -2118,8 +2146,8 @@ pub async fn contribute_fflogs_leases_abandon_handler(
 #[cfg(test)]
 mod tests {
     use super::{
-        build_detail_update_doc, detail_payload_is_too_large, fflogs_exact_home_world_only,
-        resolve_member_player, UploadablePartyDetail,
+        build_detail_update_doc, build_fflogs_result_encounter_map, detail_payload_is_too_large,
+        fflogs_exact_home_world_only, resolve_member_player, UploadablePartyDetail,
     };
     use chrono::Utc;
     use std::{collections::HashMap, sync::Arc};
@@ -2402,6 +2430,32 @@ mod tests {
             detail_payload_is_too_large(&detail, 3),
             Some("too many slot flags in request")
         );
+    }
+
+    #[test]
+    fn fflogs_result_encounter_map_skips_zero_percentile_without_clear_evidence() {
+        let encounters = HashMap::from([(101, 0.0)]);
+        let boss_percentages = HashMap::new();
+        let clear_counts = HashMap::from([(101, 0)]);
+
+        let encounter_map =
+            build_fflogs_result_encounter_map(encounters, boss_percentages, clear_counts);
+
+        assert!(encounter_map.is_empty());
+    }
+
+    #[test]
+    fn fflogs_result_encounter_map_keeps_zero_percentile_with_positive_clear_count() {
+        let encounters = HashMap::from([(101, 0.0)]);
+        let boss_percentages = HashMap::new();
+        let clear_counts = HashMap::from([(101, 1)]);
+
+        let encounter_map =
+            build_fflogs_result_encounter_map(encounters, boss_percentages, clear_counts);
+
+        let encounter = encounter_map.get("101").expect("encounter should be kept");
+        assert_eq!(encounter.percentile, 0.0);
+        assert_eq!(encounter.clear_count, Some(1));
     }
 
     #[test]

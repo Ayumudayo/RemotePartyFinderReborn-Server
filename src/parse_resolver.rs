@@ -58,7 +58,7 @@ fn hydrate_slot(
         return (None, "parse-none".to_string(), None, None);
     };
 
-    let percentile = if enc_parse.percentile >= 0.0 {
+    let percentile = if encounter_has_display_percentile(enc_parse) {
         Some(enc_parse.percentile.clamp(0.0, 100.0).floor() as u8)
     } else {
         None
@@ -78,15 +78,38 @@ fn hydrate_slot(
     (percentile, color_class, boss_percentage, clear_count)
 }
 
+fn encounter_has_positive_clear_count(encounter: &EncounterParse) -> bool {
+    encounter.clear_count.is_some_and(|value| value > 0)
+}
+
+fn encounter_has_display_percentile(encounter: &EncounterParse) -> bool {
+    encounter.percentile > 0.0
+        || (encounter.percentile == 0.0 && encounter_has_positive_clear_count(encounter))
+}
+
+fn encounter_has_relevant_data(encounter: &EncounterParse) -> bool {
+    encounter_has_display_percentile(encounter)
+        || encounter_has_positive_clear_count(encounter)
+        || encounter.boss_percentage.is_some_and(|value| value > 0.0)
+}
+
+fn requested_encounter_ids(
+    encounter_id: u32,
+    secondary_encounter_id: Option<u32>,
+) -> impl Iterator<Item = u32> {
+    std::iter::once(encounter_id).chain(secondary_encounter_id)
+}
+
 fn has_relevant_fallback_data(
     encounters: &HashMap<String, EncounterParse>,
     encounter_id: u32,
     secondary_encounter_id: Option<u32>,
 ) -> bool {
-    encounters.contains_key(&encounter_id.to_string())
-        || secondary_encounter_id
-            .map(|secondary| encounters.contains_key(&secondary.to_string()))
-            .unwrap_or(false)
+    requested_encounter_ids(encounter_id, secondary_encounter_id).any(|id| {
+        encounters
+            .get(&id.to_string())
+            .is_some_and(encounter_has_relevant_data)
+    })
 }
 
 fn hydrate_resolved(
@@ -110,11 +133,11 @@ fn hydrate_resolved(
     }
 }
 
-fn relevant_fallback_encounters<'a>(
-    fallback_encounters: Option<&'a HashMap<String, EncounterParse>>,
+fn relevant_fallback_encounters(
+    fallback_encounters: Option<&HashMap<String, EncounterParse>>,
     encounter_id: u32,
     secondary_encounter_id: Option<u32>,
-) -> Option<&'a HashMap<String, EncounterParse>> {
+) -> Option<&HashMap<String, EncounterParse>> {
     fallback_encounters.filter(|encounters| {
         has_relevant_fallback_data(encounters, encounter_id, secondary_encounter_id)
     })
@@ -127,6 +150,42 @@ fn report_parse_is_newer_than_plugin(
     fallback_updated_at
         .map(|updated_at| updated_at > plugin_zone_cache.fetched_at)
         .unwrap_or(false)
+}
+
+fn encounter_display_percentile(
+    encounters: &HashMap<String, EncounterParse>,
+    encounter_id: u32,
+) -> Option<f32> {
+    encounters
+        .get(&encounter_id.to_string())
+        .filter(|encounter| encounter_has_display_percentile(encounter))
+        .map(|encounter| encounter.percentile)
+}
+
+fn fallback_should_override_visible_plugin(
+    plugin_zone_cache: &ZoneCache,
+    fallback_encounters: &HashMap<String, EncounterParse>,
+    fallback_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    encounter_id: u32,
+    secondary_encounter_id: Option<u32>,
+) -> bool {
+    if !report_parse_is_newer_than_plugin(plugin_zone_cache, fallback_updated_at) {
+        return false;
+    }
+
+    for id in requested_encounter_ids(encounter_id, secondary_encounter_id) {
+        let plugin_percentile = encounter_display_percentile(&plugin_zone_cache.encounters, id);
+        let fallback_percentile = encounter_display_percentile(fallback_encounters, id);
+
+        if let Some(plugin_percentile) = plugin_percentile {
+            match fallback_percentile {
+                Some(fallback_percentile) if fallback_percentile > plugin_percentile => {}
+                _ => return false,
+            }
+        }
+    }
+
+    true
 }
 
 pub fn resolve_parse_data(
@@ -146,7 +205,13 @@ pub fn resolve_parse_data(
                 encounter_id,
                 secondary_encounter_id,
             ) {
-                if report_parse_is_newer_than_plugin(zone_cache, fallback_updated_at) {
+                if fallback_should_override_visible_plugin(
+                    zone_cache,
+                    encounters,
+                    fallback_updated_at,
+                    encounter_id,
+                    secondary_encounter_id,
+                ) {
                     resolved.source = ParseSource::ReportParse;
                     hydrate_resolved(
                         &mut resolved,
@@ -386,6 +451,61 @@ mod tests {
         assert_eq!(resolved.primary_clear_count, Some(5));
         assert!(!resolved.hidden);
         assert!(!resolved.originally_hidden);
+    }
+
+    #[test]
+    fn resolve_parse_data_treats_zero_without_clear_count_as_no_data() {
+        let plugin = zone_cache(
+            false,
+            false,
+            HashMap::from([("123".to_string(), encounter(0.0, None, None))]),
+        );
+
+        let resolved = resolve_parse_data(Some(&plugin), None, None, 123, None);
+
+        assert_eq!(resolved.source, ParseSource::Plugin);
+        assert_eq!(resolved.primary_percentile, None);
+        assert_eq!(resolved.primary_color_class, "parse-none");
+    }
+
+    #[test]
+    fn resolve_parse_data_keeps_zero_percentile_when_clear_count_is_positive() {
+        let plugin = zone_cache(
+            false,
+            false,
+            HashMap::from([("123".to_string(), encounter(0.0, None, Some(1)))]),
+        );
+
+        let resolved = resolve_parse_data(Some(&plugin), None, None, 123, None);
+
+        assert_eq!(resolved.source, ParseSource::Plugin);
+        assert_eq!(resolved.primary_percentile, Some(0));
+        assert_eq!(resolved.primary_clear_count, Some(1));
+    }
+
+    #[test]
+    fn resolve_parse_data_keeps_better_plugin_parse_over_newer_zero_report_parse() {
+        let plugin_fetched_at = Utc::now() - TimeDelta::try_minutes(30).unwrap();
+        let report_updated_at = plugin_fetched_at + TimeDelta::try_minutes(10).unwrap();
+        let plugin = zone_cache_at(
+            plugin_fetched_at,
+            false,
+            false,
+            HashMap::from([("123".to_string(), encounter(97.4, None, Some(8)))]),
+        );
+        let fallback = HashMap::from([("123".to_string(), encounter(0.0, None, Some(1)))]);
+
+        let resolved = resolve_parse_data(
+            Some(&plugin),
+            Some(&fallback),
+            Some(report_updated_at),
+            123,
+            None,
+        );
+
+        assert_eq!(resolved.source, ParseSource::Plugin);
+        assert_eq!(resolved.primary_percentile, Some(97));
+        assert_eq!(resolved.primary_clear_count, Some(8));
     }
 
     #[test]
