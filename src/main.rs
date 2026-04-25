@@ -109,10 +109,91 @@ async fn get_config<P: AsRef<Path>>(path: P) -> anyhow::Result<Config> {
     f.read_to_string(&mut toml)
         .await
         .context("could not read config file")?;
-    let mut config: Config = toml::from_str(&toml).context("could not parse config file")?;
-    config
-        .apply_env_overrides_from_env()
-        .context("could not apply environment config overrides")?;
+    toml::from_str(&toml).context("could not parse config file")
+}
 
-    Ok(config)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use remote_party_finder_reborn::config::ListingsSnapshotSource;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, &'static str)]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect();
+            for (name, value) in vars {
+                std::env::set_var(name, value);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.saved.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+
+    fn write_temp_config(contents: &str) -> PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rpf-server-config-{nanos}.toml"));
+        std::fs::write(&path, contents).expect("temp config should be writable");
+        path
+    }
+
+    #[tokio::test]
+    async fn get_config_uses_config_file_as_single_source() {
+        let _lock = ENV_LOCK.lock().await;
+        let _env = EnvGuard::set(&[
+            ("PORT", "9999"),
+            ("MONGODB_URI", "mongodb://env-mongo"),
+            ("RPF_LISTINGS_SNAPSHOT_SOURCE", "materialized"),
+            ("RPF_SNAPSHOT_REFRESH_SHARED_SECRET", "env-secret"),
+            ("RPF_SNAPSHOT_REFRESH_CLIENT_ID", "env-client"),
+        ]);
+        let path = write_temp_config(
+            r#"
+[web]
+host = "127.0.0.1:8123"
+
+[mongo]
+url = "mongodb://file-mongo"
+"#,
+        );
+
+        let config = get_config(&path).await.expect("file config should load");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.web.host.to_string(), "127.0.0.1:8123");
+        assert_eq!(config.mongo.url, "mongodb://file-mongo");
+        assert_eq!(
+            config.web.listings_snapshot_source,
+            ListingsSnapshotSource::Inline
+        );
+        assert_eq!(config.web.snapshot_refresh_shared_secret, "");
+        assert_eq!(
+            config.web.snapshot_refresh_client_id,
+            "listings-snapshot-worker"
+        );
+    }
 }
