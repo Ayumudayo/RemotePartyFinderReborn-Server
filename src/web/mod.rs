@@ -144,6 +144,8 @@ pub struct IngestRateWindow {
 pub struct CachedListingsSnapshot {
     pub revision: u64,
     pub body: Bytes,
+    pub etag: Option<String>,
+    pub content_encoding: Option<String>,
 }
 
 #[derive(Debug, Default)]

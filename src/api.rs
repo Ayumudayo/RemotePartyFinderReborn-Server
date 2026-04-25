@@ -1,13 +1,7 @@
-use crate::listing::{ConditionFlags, ObjectiveFlags, PartyFinderListing, SearchAreaFlags};
-use crate::listing_container::QueriedListing;
-use crate::template::listings::{
-    ParseDisplay, ProgressDisplay, RenderableListing, RenderableMember,
-};
-use crate::web::handlers::build_listings_template;
+use crate::listings_snapshot::{build_listings_payload, serialize_snapshot, BuiltListingsPayload};
 use crate::web::{CachedListingsSnapshot, ListingsSnapshotCacheState, State};
 use crate::ws::WsApiClient;
-use serde::Serialize;
-use sestring::{Payload, SeString};
+use anyhow::Context;
 use std::convert::Infallible;
 use std::future::Future;
 use std::sync::Arc;
@@ -24,15 +18,6 @@ pub fn api(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     warp::path("api")
         .and(ws(state.clone()).or(listings_snapshot(state.clone())))
         .boxed()
-}
-
-async fn build_api_listings(state: Arc<State>) -> Vec<ApiReadableListingContainer> {
-    build_listings_template(state, None)
-        .await
-        .containers
-        .into_iter()
-        .map(ApiReadableListingContainer::from_renderable)
-        .collect()
 }
 
 async fn build_snapshot_payload<T, Build, BuildFut, CurrentRevision>(
@@ -58,27 +43,30 @@ where
     (revision_before, payload)
 }
 
-async fn build_api_snapshot(state: Arc<State>) -> ApiListingsSnapshot {
-    let (revision, listings) = build_snapshot_payload(
-        || build_api_listings(Arc::clone(&state)),
+async fn build_api_snapshot(state: Arc<State>) -> anyhow::Result<CachedListingsSnapshot> {
+    let (revision, payload): (u64, anyhow::Result<BuiltListingsPayload>) = build_snapshot_payload(
+        || build_listings_payload(Arc::clone(&state)),
         || state.current_listings_revision(),
     )
     .await;
-
-    ApiListingsSnapshot { revision, listings }
-}
-
-async fn build_cached_api_snapshot(
-    state: Arc<State>,
-) -> Result<CachedListingsSnapshot, serde_json::Error> {
-    let snapshot = build_api_snapshot(state).await;
-    let revision = snapshot.revision;
-    let body = serde_json::to_vec(&snapshot)?;
+    let payload = payload?;
+    let snapshot = serialize_snapshot(
+        revision
+            .try_into()
+            .context("listings snapshot revision exceeded i64")?,
+        payload,
+    )?;
 
     Ok(CachedListingsSnapshot {
         revision,
-        body: body.into(),
+        body: snapshot.body.into(),
+        etag: Some(snapshot.etag),
+        content_encoding: None,
     })
+}
+
+async fn build_cached_api_snapshot(state: Arc<State>) -> anyhow::Result<CachedListingsSnapshot> {
+    build_api_snapshot(state).await
 }
 
 async fn get_or_build_cached_snapshot<F, Fut, E>(
@@ -152,9 +140,7 @@ where
     }
 }
 
-async fn get_cached_api_snapshot(
-    state: Arc<State>,
-) -> Result<CachedListingsSnapshot, serde_json::Error> {
+async fn get_cached_api_snapshot(state: Arc<State>) -> anyhow::Result<CachedListingsSnapshot> {
     let min_revision = state.current_listings_revision();
     get_or_build_cached_snapshot(&state.listings_snapshot_cache, min_revision, || {
         build_cached_api_snapshot(Arc::clone(&state))
@@ -215,315 +201,6 @@ fn ws(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     warp::get().and(route).boxed()
 }
 
-fn sestring_payloads(value: &SeString) -> Vec<ApiSeStringPayload> {
-    value
-        .0
-        .iter()
-        .filter_map(|payload| match payload {
-            Payload::Text(text) => Some(ApiSeStringPayload::Text {
-                text: text.0.clone(),
-            }),
-            Payload::AutoTranslate(auto_translate) => Some(ApiSeStringPayload::AutoTranslate {
-                group: auto_translate.group,
-                key: auto_translate.key,
-            }),
-            _ => None,
-        })
-        .collect()
-}
-
-fn description_badges(listing: &PartyFinderListing) -> (&'static str, Vec<&'static str>) {
-    let mut colour_class = "";
-    let mut badges = Vec::new();
-
-    if listing.objective.contains(ObjectiveFlags::PRACTICE) {
-        badges.push("practice");
-        colour_class = "desc-green";
-    }
-
-    if listing.objective.contains(ObjectiveFlags::DUTY_COMPLETION) {
-        badges.push("duty_completion");
-        colour_class = "desc-blue";
-    }
-
-    if listing.objective.contains(ObjectiveFlags::LOOT) {
-        badges.push("loot");
-        colour_class = "desc-yellow";
-    }
-
-    if listing.conditions.contains(ConditionFlags::DUTY_COMPLETE) {
-        badges.push("duty_complete");
-    }
-
-    if listing
-        .conditions
-        .contains(ConditionFlags::DUTY_COMPLETE_WEEKLY_REWARD_UNCLAIMED)
-    {
-        badges.push("weekly_reward_unclaimed");
-    }
-
-    if listing.conditions.contains(ConditionFlags::DUTY_INCOMPLETE) {
-        badges.push("duty_incomplete");
-    }
-
-    if listing
-        .search_area
-        .contains(SearchAreaFlags::ONE_PLAYER_PER_JOB)
-    {
-        badges.push("one_player_per_job");
-    }
-
-    (colour_class, badges)
-}
-
-fn role_class_from_class_job(class_job: &ffxiv_types::jobs::ClassJob) -> &'static str {
-    use ffxiv_types::Role;
-
-    match class_job.role() {
-        Some(Role::Tank) => "tank",
-        Some(Role::Healer) => "healer",
-        Some(Role::Dps) => "dps",
-        None => "",
-    }
-}
-
-fn build_display_slots(listing: &PartyFinderListing) -> Vec<ApiDisplaySlot> {
-    listing
-        .slots()
-        .into_iter()
-        .map(|slot| match slot {
-            Ok(class_job) => ApiDisplaySlot {
-                filled: true,
-                role_class: role_class_from_class_job(&class_job).to_string(),
-                title: class_job.code().to_string(),
-                icon_code: Some(class_job.code().to_string()),
-            },
-            Err((role_class, title)) => ApiDisplaySlot {
-                filled: false,
-                role_class,
-                title,
-                icon_code: None,
-            },
-        })
-        .collect()
-}
-
-#[derive(Serialize)]
-struct ApiListingsSnapshot {
-    revision: u64,
-    listings: Vec<ApiReadableListingContainer>,
-}
-
-/// A render-oriented JSON shape for client-side listings rendering.
-#[derive(Serialize)]
-struct ApiReadableListingContainer {
-    time_left_seconds: i64,
-    updated_at_timestamp: i64,
-    listing: ApiReadableListing,
-}
-
-impl ApiReadableListingContainer {
-    fn from_renderable(value: RenderableListing) -> Self {
-        let RenderableListing {
-            container,
-            members,
-            leader_parse,
-        } = value;
-        let QueriedListing {
-            created_at: _,
-            updated_at,
-            updated_minute: _,
-            time_left,
-            listing,
-        } = container;
-        let time_left_seconds = time_left as i64;
-        let updated_at_timestamp = updated_at.timestamp();
-
-        Self {
-            time_left_seconds,
-            updated_at_timestamp,
-            listing: ApiReadableListing::from_parts(listing, members, leader_parse),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ApiReadableListing {
-    creator_name: Vec<ApiSeStringPayload>,
-    description: Vec<ApiSeStringPayload>,
-    duty_id: u16,
-    duty_type: u8,
-    category: u32,
-    created_world: ApiReadableWorld,
-    home_world: ApiReadableWorld,
-    data_centre: Option<&'static str>,
-    min_item_level: u16,
-    num_parties: u8,
-    slot_count: u8,
-    slots_filled_count: usize,
-    high_end: bool,
-    cross_world: bool,
-    content_kind: u32,
-    joinable_roles: u32,
-    objective_bits: u32,
-    conditions_bits: u32,
-    search_area_bits: u32,
-    description_badge_class: &'static str,
-    description_badges: Vec<&'static str>,
-    display_slots: Vec<ApiDisplaySlot>,
-    members: Vec<ApiReadableMember>,
-    leader_parse: ApiParseDisplay,
-    is_alliance_view: bool,
-}
-
-impl ApiReadableListing {
-    fn from_parts(
-        value: PartyFinderListing,
-        members: Vec<RenderableMember>,
-        leader_parse: ParseDisplay,
-    ) -> Self {
-        let (description_badge_class, description_badges) = description_badges(&value);
-        let is_alliance_view =
-            value.num_parties >= 3 || members.iter().any(|member| member.party_index > 0);
-
-        Self {
-            creator_name: sestring_payloads(&value.name),
-            description: sestring_payloads(&value.description),
-            duty_id: value.duty,
-            duty_type: value.duty_type as u8,
-            category: value.category as u32,
-            created_world: value.created_world.into(),
-            home_world: value.home_world.into(),
-            data_centre: value.data_centre_name(),
-            min_item_level: value.min_item_level,
-            num_parties: value.num_parties,
-            slot_count: value.slots_available,
-            slots_filled_count: value.slots_filled(),
-            high_end: value.high_end(),
-            cross_world: value.is_cross_world(),
-            content_kind: value.content_kind(),
-            joinable_roles: value.joinable_roles(),
-            objective_bits: value.objective.bits() as u32,
-            conditions_bits: value.conditions.bits() as u32,
-            search_area_bits: value.search_area.bits() as u32,
-            description_badge_class,
-            description_badges,
-            display_slots: build_display_slots(&value),
-            members: members.into_iter().map(ApiReadableMember::from).collect(),
-            leader_parse: leader_parse.into(),
-            is_alliance_view,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ApiReadableMember {
-    name: String,
-    home_world: ApiReadableWorld,
-    job_id: u8,
-    job_code: Option<&'static str>,
-    role_class: &'static str,
-    parse: ApiParseDisplay,
-    progress: ApiProgressDisplay,
-    slot_index: usize,
-    party_index: u8,
-    fflogs_character_url: Option<String>,
-}
-
-impl From<RenderableMember> for ApiReadableMember {
-    fn from(value: RenderableMember) -> Self {
-        let job_code = value.job_code();
-        let role_class = value.role_class();
-        let fflogs_character_url = value.fflogs_character_url();
-
-        Self {
-            name: value.player.name,
-            home_world: value.player.home_world.into(),
-            job_id: value.job_id,
-            job_code,
-            role_class,
-            parse: value.parse.into(),
-            progress: value.progress.into(),
-            slot_index: value.slot_index,
-            party_index: value.party_index,
-            fflogs_character_url,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ApiParseDisplay {
-    primary_percentile: Option<u8>,
-    primary_color_class: String,
-    secondary_percentile: Option<u8>,
-    secondary_color_class: String,
-    has_secondary: bool,
-    hidden: bool,
-    originally_hidden: bool,
-    estimated: bool,
-}
-
-impl From<ParseDisplay> for ApiParseDisplay {
-    fn from(value: ParseDisplay) -> Self {
-        Self {
-            primary_percentile: value.primary_percentile,
-            primary_color_class: value.primary_color_class,
-            secondary_percentile: value.secondary_percentile,
-            secondary_color_class: value.secondary_color_class,
-            has_secondary: value.has_secondary,
-            hidden: value.hidden,
-            originally_hidden: value.originally_hidden,
-            estimated: value.estimated,
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ApiProgressDisplay {
-    final_boss_percentage: Option<u8>,
-    final_clear_count: Option<u16>,
-}
-
-impl From<ProgressDisplay> for ApiProgressDisplay {
-    fn from(value: ProgressDisplay) -> Self {
-        Self {
-            final_boss_percentage: value.final_boss_percentage,
-            final_clear_count: value.final_clear_count,
-        }
-    }
-}
-
-#[derive(Serialize)]
-#[serde(tag = "type", rename_all = "snake_case")]
-enum ApiSeStringPayload {
-    Text { text: String },
-    AutoTranslate { group: u8, key: u32 },
-}
-
-#[derive(Serialize)]
-struct ApiReadableWorld {
-    name: &'static str,
-}
-
-impl From<u16> for ApiReadableWorld {
-    fn from(value: u16) -> Self {
-        Self {
-            name: crate::ffxiv::WORLDS
-                .get(&(value as u32))
-                .map(|w| w.as_str())
-                .unwrap_or("Unknown"),
-        }
-    }
-}
-
-#[derive(Serialize)]
-struct ApiDisplaySlot {
-    filled: bool,
-    role_class: String,
-    title: String,
-    icon_code: Option<String>,
-}
-
 #[cfg(test)]
 mod tests {
     use chrono::Utc;
@@ -539,15 +216,13 @@ mod tests {
         ConditionFlags, DutyCategory, DutyFinderSettingsFlags, DutyType, JobFlags, LootRuleFlags,
         ObjectiveFlags, PartyFinderListing, PartyFinderSlot, SearchAreaFlags,
     };
+    use crate::listings_snapshot::ApiReadableListing;
     use crate::parse_resolver::ParseSource;
     use crate::player::Player;
     use crate::template::listings::{ParseDisplay, ProgressDisplay, RenderableMember};
     use crate::web::ListingsSnapshotCacheState;
 
-    use super::{
-        build_snapshot_payload, get_or_build_cached_snapshot, ApiReadableListing,
-        CachedListingsSnapshot,
-    };
+    use super::{build_snapshot_payload, get_or_build_cached_snapshot, CachedListingsSnapshot};
 
     fn sample_listing() -> PartyFinderListing {
         PartyFinderListing {
@@ -592,6 +267,8 @@ mod tests {
         CachedListingsSnapshot {
             revision,
             body: format!(r#"{{"revision":{revision}}}"#).into_bytes().into(),
+            etag: None,
+            content_encoding: None,
         }
     }
 

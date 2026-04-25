@@ -5,6 +5,7 @@ pub mod dev;
 pub mod domain;
 pub mod ffxiv;
 pub mod infra;
+pub mod listings_snapshot;
 pub mod parse_resolver;
 pub mod sestring_ext;
 pub mod template;
