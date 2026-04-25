@@ -123,6 +123,39 @@ URL, `snapshot_refresh_shared_secret`, `snapshot_refresh_client_id`, and
 https://<web-host>/internal/listings/snapshot/refresh
 ```
 
+Supported environment overrides:
+
+| Variable | Applies to | Type | Overrides |
+| --- | --- | --- | --- |
+| `PORT` | Server | TCP port | `web.host` as `0.0.0.0:<PORT>` |
+| `RPF_WEB_HOST` | Server | Socket address | `web.host`; takes precedence over `PORT` |
+| `MONGODB_URI` | Server, worker | String | `mongo.url` |
+| `MONGO_URL` | Server, worker | String | `mongo.url` |
+| `RPF_MONGO_URL` | Server, worker | String | `mongo.url` |
+| `RPF_LISTINGS_SNAPSHOT_SOURCE` | Server, worker | `inline` or `materialized` | `web.listings_snapshot_source` |
+| `RPF_LISTINGS_SNAPSHOT_COLLECTION` | Server, worker | String | `web.listings_snapshot_collection` |
+| `RPF_LISTINGS_SNAPSHOT_DOCUMENT_ID` | Server, worker | String | `web.listings_snapshot_document_id` |
+| `RPF_LISTING_SOURCE_STATE_COLLECTION` | Server, worker | String | `web.listing_source_state_collection` |
+| `RPF_LISTING_SOURCE_STATE_DOCUMENT_ID` | Server, worker | String | `web.listing_source_state_document_id` |
+| `RPF_LISTING_SNAPSHOT_REVISION_STATE_COLLECTION` | Server, worker | String | `web.listing_snapshot_revision_state_collection` |
+| `RPF_LISTING_SNAPSHOT_WORKER_LEASE_COLLECTION` | Worker | String | `web.listing_snapshot_worker_lease_collection` |
+| `RPF_MATERIALIZED_SNAPSHOT_RECONCILE_INTERVAL_SECONDS` | Server | Unsigned integer | `web.materialized_snapshot_reconcile_interval_seconds` |
+| `RPF_SNAPSHOT_REFRESH_SHARED_SECRET` | Server, worker | String | `web.snapshot_refresh_shared_secret` |
+| `RPF_SNAPSHOT_REFRESH_CLIENT_ID` | Server, worker | String | `web.snapshot_refresh_client_id` |
+| `RPF_SNAPSHOT_REFRESH_CLOCK_SKEW_SECONDS` | Server, worker | Unsigned integer | `web.snapshot_refresh_clock_skew_seconds` |
+| `RPF_SNAPSHOT_REFRESH_NONCE_TTL_SECONDS` | Server | Unsigned integer | `web.snapshot_refresh_nonce_ttl_seconds` |
+| `RPF_SNAPSHOT_WORKER_ENABLED` | Worker | Boolean | `snapshot_worker.enabled` |
+| `RPF_SNAPSHOT_WORKER_TICK_SECONDS` | Worker | Unsigned integer | `snapshot_worker.tick_seconds` |
+| `RPF_SNAPSHOT_WORKER_FORCE_REBUILD_INTERVAL_SECONDS` | Worker | Unsigned integer | `snapshot_worker.force_rebuild_interval_seconds` |
+| `RPF_SNAPSHOT_WORKER_LEASE_TTL_SECONDS` | Worker | Unsigned integer | `snapshot_worker.lease_ttl_seconds` |
+| `RPF_SNAPSHOT_WORKER_OWNER_ID` | Worker | String | `snapshot_worker.owner_id` |
+| `RPF_SNAPSHOT_WORKER_REFRESH_URL` | Worker | URL | `snapshot_worker.refresh_url` |
+| `RPF_SNAPSHOT_WORKER_LOG_FILTER` | Worker | Tracing filter | `snapshot_worker.log_filter` |
+
+Boolean values accept `1`, `true`, `yes`, `on`, `0`, `false`, `no`, and `off`.
+Only the variables listed above are currently supported as environment
+overrides; other tuning values must still be set in `config.toml`.
+
 ### Recommended Presets
 
 Tune these four values together based on server capacity and contributor count:
