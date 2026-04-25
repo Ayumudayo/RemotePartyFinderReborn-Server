@@ -1,3 +1,4 @@
+use anyhow::{bail, Result};
 use serde::Deserialize;
 use std::net::SocketAddr;
 
@@ -117,10 +118,71 @@ fn default_listings_revision_coalesce_millis() -> u64 {
     1000
 }
 
+fn default_listings_snapshot_source() -> ListingsSnapshotSource {
+    ListingsSnapshotSource::Inline
+}
+
+fn default_listings_snapshot_collection() -> String {
+    "listings_snapshots".to_string()
+}
+
+fn default_listings_snapshot_document_id() -> String {
+    "current".to_string()
+}
+
+fn default_listing_source_state_collection() -> String {
+    "listing_source_state".to_string()
+}
+
+fn default_listing_source_state_document_id() -> String {
+    "current".to_string()
+}
+
+fn default_listing_snapshot_revision_state_collection() -> String {
+    "listing_snapshot_revision_state".to_string()
+}
+
+fn default_listing_snapshot_worker_lease_collection() -> String {
+    "listing_snapshot_worker_leases".to_string()
+}
+
+fn default_materialized_snapshot_reconcile_interval_seconds() -> u64 {
+    30
+}
+
+fn default_snapshot_refresh_shared_secret() -> String {
+    String::new()
+}
+
+fn default_snapshot_refresh_client_id() -> String {
+    "listings-snapshot-worker".to_string()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ListingsSnapshotSource {
+    Inline,
+    Materialized,
+}
+
 #[derive(Deserialize)]
 pub struct Config {
     pub web: Web,
     pub mongo: Mongo,
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<()> {
+        if self.web.listings_snapshot_source == ListingsSnapshotSource::Materialized
+            && self.web.snapshot_refresh_shared_secret.trim().is_empty()
+        {
+            bail!(
+                "web.snapshot_refresh_shared_secret must be set when listings_snapshot_source is materialized"
+            );
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(Deserialize)]
@@ -184,9 +246,107 @@ pub struct Web {
     pub monitor_snapshot_interval_seconds: u64,
     #[serde(default = "default_listings_revision_coalesce_millis")]
     pub listings_revision_coalesce_millis: u64,
+    #[serde(default = "default_listings_snapshot_source")]
+    pub listings_snapshot_source: ListingsSnapshotSource,
+    #[serde(default = "default_listings_snapshot_collection")]
+    pub listings_snapshot_collection: String,
+    #[serde(default = "default_listings_snapshot_document_id")]
+    pub listings_snapshot_document_id: String,
+    #[serde(default = "default_listing_source_state_collection")]
+    pub listing_source_state_collection: String,
+    #[serde(default = "default_listing_source_state_document_id")]
+    pub listing_source_state_document_id: String,
+    #[serde(default = "default_listing_snapshot_revision_state_collection")]
+    pub listing_snapshot_revision_state_collection: String,
+    #[serde(default = "default_listing_snapshot_worker_lease_collection")]
+    pub listing_snapshot_worker_lease_collection: String,
+    #[serde(default = "default_materialized_snapshot_reconcile_interval_seconds")]
+    pub materialized_snapshot_reconcile_interval_seconds: u64,
+    #[serde(default = "default_snapshot_refresh_shared_secret")]
+    pub snapshot_refresh_shared_secret: String,
+    #[serde(default = "default_snapshot_refresh_client_id")]
+    pub snapshot_refresh_client_id: String,
 }
 
 #[derive(Deserialize)]
 pub struct Mongo {
     pub url: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Config, ListingsSnapshotSource};
+
+    fn minimal_config_toml(extra_web: &str) -> String {
+        format!(
+            r#"
+[web]
+host = "127.0.0.1:0"
+{extra_web}
+
+[mongo]
+url = "mongodb://127.0.0.1:27017"
+"#
+        )
+    }
+
+    #[test]
+    fn config_defaults_to_inline_listings_snapshot_source_and_safe_materialized_names() {
+        let config: Config = toml::from_str(&minimal_config_toml("")).expect("config should parse");
+
+        assert_eq!(
+            config.web.listings_snapshot_source,
+            ListingsSnapshotSource::Inline
+        );
+        assert_eq!(
+            config.web.listings_snapshot_collection,
+            "listings_snapshots"
+        );
+        assert_eq!(config.web.listings_snapshot_document_id, "current");
+        assert_eq!(
+            config.web.listing_source_state_collection,
+            "listing_source_state"
+        );
+        assert_eq!(config.web.listing_source_state_document_id, "current");
+        assert_eq!(
+            config.web.listing_snapshot_revision_state_collection,
+            "listing_snapshot_revision_state"
+        );
+        assert_eq!(
+            config.web.listing_snapshot_worker_lease_collection,
+            "listing_snapshot_worker_leases"
+        );
+        assert_eq!(
+            config.web.materialized_snapshot_reconcile_interval_seconds,
+            30
+        );
+        assert_eq!(config.web.snapshot_refresh_shared_secret, "");
+        assert_eq!(
+            config.web.snapshot_refresh_client_id,
+            "listings-snapshot-worker"
+        );
+        config
+            .validate()
+            .expect("inline mode may use a blank refresh secret");
+    }
+
+    #[test]
+    fn materialized_snapshot_source_rejects_blank_refresh_secret() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "   "
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate()
+            .expect_err("materialized mode must fail closed without refresh secret");
+
+        assert!(
+            error.to_string().contains("snapshot_refresh_shared_secret"),
+            "unexpected validation error: {error:#}"
+        );
+    }
 }

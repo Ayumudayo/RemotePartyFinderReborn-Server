@@ -15,8 +15,12 @@ use tokio::sync::{Notify, RwLock};
 use uuid::Uuid;
 use warp::hyper::body::Bytes;
 
-use crate::config::Config;
+use crate::config::{Config, ListingsSnapshotSource};
 use crate::listing_container::ListingContainer;
+use crate::listings_snapshot::{
+    ListingSnapshotRevisionStateDoc, ListingSnapshotWorkerLeaseDoc, ListingSourceStateDoc,
+    MaterializedListingsSnapshotDoc,
+};
 use crate::player::Player;
 use crate::stats::CachedStatistics;
 
@@ -37,6 +41,7 @@ pub async fn start(config: Arc<Config>) -> Result<()> {
     background::spawn_fflogs_lease_sweeper_task(Arc::clone(&state));
     background::spawn_listings_revision_publisher_task(Arc::clone(&state));
     background::spawn_monitor_snapshot_task(Arc::clone(&state));
+    background::spawn_materialized_snapshot_reconcile_task(Arc::clone(&state));
 
     tracing::info!("listening at {}", config.web.host);
     warp::serve(routes::router(state))
@@ -54,6 +59,16 @@ pub struct State {
     pub listings_revision_notify: Notify,
     pub listings_revision_coalesce_window: Duration,
     pub listings_snapshot_cache: RwLock<ListingsSnapshotCacheState>,
+    pub listings_snapshot_source: ListingsSnapshotSource,
+    pub listings_snapshot_collection_name: String,
+    pub listings_snapshot_document_id: String,
+    pub listing_source_state_collection_name: String,
+    pub listing_source_state_document_id: String,
+    pub listing_snapshot_revision_state_collection_name: String,
+    pub listing_snapshot_worker_lease_collection_name: String,
+    pub materialized_snapshot_reconcile_interval_seconds: u64,
+    pub snapshot_refresh_shared_secret: String,
+    pub snapshot_refresh_client_id: String,
     pub fflogs_jobs_limit: usize,
     pub fflogs_hidden_cache_ttl_hours: i64,
     pub listing_upsert_concurrency: usize,
@@ -229,6 +244,8 @@ fn duplicate_ids_to_remove(group: &PlayerDuplicateGroup) -> Vec<mongodb::bson::o
 
 impl State {
     pub async fn new(config: Arc<Config>) -> Result<Arc<Self>> {
+        config.validate()?;
+
         let mongo = MongoClient::with_uri_str(&config.mongo.url)
             .await
             .context("could not create mongodb client")?;
@@ -245,6 +262,31 @@ impl State {
                 config.web.listings_revision_coalesce_millis.max(1),
             ),
             listings_snapshot_cache: Default::default(),
+            listings_snapshot_source: config.web.listings_snapshot_source,
+            listings_snapshot_collection_name: config.web.listings_snapshot_collection.clone(),
+            listings_snapshot_document_id: config.web.listings_snapshot_document_id.clone(),
+            listing_source_state_collection_name: config
+                .web
+                .listing_source_state_collection
+                .clone(),
+            listing_source_state_document_id: config.web.listing_source_state_document_id.clone(),
+            listing_snapshot_revision_state_collection_name: config
+                .web
+                .listing_snapshot_revision_state_collection
+                .clone(),
+            listing_snapshot_worker_lease_collection_name: config
+                .web
+                .listing_snapshot_worker_lease_collection
+                .clone(),
+            materialized_snapshot_reconcile_interval_seconds: config
+                .web
+                .materialized_snapshot_reconcile_interval_seconds,
+            snapshot_refresh_shared_secret: config
+                .web
+                .snapshot_refresh_shared_secret
+                .trim()
+                .to_string(),
+            snapshot_refresh_client_id: config.web.snapshot_refresh_client_id.clone(),
             fflogs_jobs_limit: config.web.fflogs_jobs_limit.max(1),
             fflogs_hidden_cache_ttl_hours: config.web.fflogs_hidden_cache_ttl_hours.max(1),
             listing_upsert_concurrency: config.web.listing_upsert_concurrency.max(1),
@@ -514,6 +556,34 @@ impl State {
         self.mongo
             .database("rpf")
             .collection("report_parse_summaries")
+    }
+
+    pub fn listings_snapshot_collection(&self) -> Collection<MaterializedListingsSnapshotDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listings_snapshot_collection_name)
+    }
+
+    pub fn listing_source_state_collection(&self) -> Collection<ListingSourceStateDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listing_source_state_collection_name)
+    }
+
+    pub fn listing_snapshot_revision_state_collection(
+        &self,
+    ) -> Collection<ListingSnapshotRevisionStateDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listing_snapshot_revision_state_collection_name)
+    }
+
+    pub fn listing_snapshot_worker_lease_collection(
+        &self,
+    ) -> Collection<ListingSnapshotWorkerLeaseDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listing_snapshot_worker_lease_collection_name)
     }
 
     pub fn notify_listings_changed(&self, changed_count: usize) {

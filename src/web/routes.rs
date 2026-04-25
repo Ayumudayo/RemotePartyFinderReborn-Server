@@ -20,6 +20,7 @@ pub fn router(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .or(stats(Arc::clone(&state)))
         .or(stats_seven_days(Arc::clone(&state)))
         .or(assets())
+        .or(crate::api::internal_routes(Arc::clone(&state)))
         .or(crate::api::api(Arc::clone(&state)))
         .boxed()
 }

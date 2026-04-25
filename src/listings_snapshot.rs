@@ -10,7 +10,10 @@ use chrono::{DateTime, Utc};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
-use mongodb::bson::{spec::BinarySubtype, Binary};
+use mongodb::{
+    bson::{doc, spec::BinarySubtype, Binary, Document},
+    options::{FindOneAndUpdateOptions, ReturnDocument, UpdateOptions},
+};
 use serde::{Deserialize, Serialize};
 use sestring::{Payload, SeString};
 use sha2::{Digest, Sha256};
@@ -167,17 +170,65 @@ pub fn materialized_doc_from_snapshot(
 pub fn cached_snapshot_from_materialized_doc(
     doc: &MaterializedListingsSnapshotDoc,
 ) -> anyhow::Result<CachedListingsSnapshot> {
-    let body = gunzip_body(&doc.body_gzip.bytes)?;
-
     Ok(CachedListingsSnapshot {
         revision: doc
             .revision
             .try_into()
             .context("materialized snapshot revision must be non-negative")?,
-        body: body.into(),
+        body: doc.body_gzip.bytes.clone().into(),
         etag: Some(doc.etag.clone()),
-        content_encoding: None,
+        content_encoding: (!doc.content_encoding.trim().is_empty())
+            .then(|| doc.content_encoding.clone()),
     })
+}
+
+pub async fn load_current_materialized_snapshot(
+    state: &State,
+) -> anyhow::Result<Option<CachedListingsSnapshot>> {
+    let doc = state
+        .listings_snapshot_collection()
+        .find_one(doc! { "_id": &state.listings_snapshot_document_id }, None)
+        .await
+        .context("failed to load current materialized listings snapshot")?;
+
+    doc.as_ref()
+        .map(cached_snapshot_from_materialized_doc)
+        .transpose()
+}
+
+pub fn listing_source_revision_increment_update(
+    document_id: &str,
+    updated_at: DateTime<Utc>,
+) -> (Document, Document, UpdateOptions) {
+    let filter = doc! { "_id": document_id };
+    let update = doc! {
+        "$inc": { "revision": 1_i64 },
+        "$set": { "updated_at": mongodb::bson::DateTime::from_chrono(updated_at) },
+        "$setOnInsert": { "_id": document_id },
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
+
+    (filter, update, options)
+}
+
+pub async fn increment_listing_source_revision(state: &State) -> anyhow::Result<i64> {
+    let (filter, update, _) = listing_source_revision_increment_update(
+        &state.listing_source_state_document_id,
+        Utc::now(),
+    );
+    let options = FindOneAndUpdateOptions::builder()
+        .upsert(true)
+        .return_document(ReturnDocument::After)
+        .build();
+
+    let doc = state
+        .listing_source_state_collection()
+        .find_one_and_update(filter, update, options)
+        .await
+        .context("failed to increment listing source revision")?
+        .context("listing source revision update returned no document")?;
+
+    Ok(doc.revision)
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -575,7 +626,32 @@ mod tests {
 
         assert_eq!(cached.revision, 42);
         assert_eq!(cached.etag, Some(etag));
-        assert_eq!(cached.content_encoding, None);
-        assert_eq!(cached.body.as_ref(), br#"{"revision":42,"listings":[]}"#);
+        assert_eq!(cached.content_encoding, Some("gzip".to_string()));
+        assert_eq!(cached.body.as_ref(), doc.body_gzip.bytes.as_slice());
+        assert_eq!(
+            gunzip_body(cached.body.as_ref()).expect("cached body should decode"),
+            br#"{"revision":42,"listings":[]}"#
+        );
+    }
+
+    #[test]
+    fn source_revision_increment_update_targets_current_document() {
+        let (filter, update, options) =
+            listing_source_revision_increment_update("current", Utc::now());
+
+        assert_eq!(filter, mongodb::bson::doc! { "_id": "current" });
+        assert_eq!(
+            update.get_document("$inc").unwrap(),
+            &mongodb::bson::doc! { "revision": 1_i64 }
+        );
+        assert!(update
+            .get_document("$set")
+            .unwrap()
+            .contains_key("updated_at"));
+        assert_eq!(
+            update.get_document("$setOnInsert").unwrap(),
+            &mongodb::bson::doc! { "_id": "current" }
+        );
+        assert_eq!(options.upsert, Some(true));
     }
 }
