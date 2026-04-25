@@ -283,7 +283,12 @@ async fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
     file.read_to_string(&mut toml)
         .await
         .context("could not read config file")?;
-    toml::from_str(&toml).context("could not parse config file")
+    let mut config: Config = toml::from_str(&toml).context("could not parse config file")?;
+    config
+        .apply_env_overrides_from_env()
+        .context("could not apply environment config overrides")?;
+
+    Ok(config)
 }
 
 fn init_tracing(log_filter: &str) {

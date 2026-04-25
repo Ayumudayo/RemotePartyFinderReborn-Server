@@ -98,6 +98,31 @@ Shared-secret signatures are suitable for controlled/private deployments only; t
 Protected endpoint capabilities are designed for a staged rollout: keep
 `ingest_require_capabilities_for_protected_endpoints = false` until updated plugin builds are live, then enable it with a separate `ingest_capability_secret`.
 
+### Materialized Listings Deployment
+
+For low-resource hosting, run the web server in materialized snapshot mode and run
+`listings_snapshot_worker` on a separate machine. The worker writes the compressed
+snapshot into MongoDB and sends a signed refresh request to the web server.
+
+Koyeb-style container deployments can override `config.toml` with environment
+variables instead of baking secrets into the image:
+
+```text
+RPF_LISTINGS_SNAPSHOT_SOURCE=materialized
+RPF_SNAPSHOT_REFRESH_SHARED_SECRET=<same-long-random-secret-as-worker>
+RPF_SNAPSHOT_REFRESH_CLIENT_ID=listings-snapshot-worker
+RPF_MATERIALIZED_SNAPSHOT_RECONCILE_INTERVAL_SECONDS=5
+```
+
+Use `MONGODB_URI`, `MONGO_URL`, or `RPF_MONGO_URL` when the MongoDB URL should be
+injected from the host environment. The Pi-side worker must use the same MongoDB
+URL, `snapshot_refresh_shared_secret`, `snapshot_refresh_client_id`, and
+`listings_snapshot_document_id`, with `snapshot_worker.refresh_url` pointing at:
+
+```text
+https://<web-host>/internal/listings/snapshot/refresh
+```
+
 ### Recommended Presets
 
 Tune these four values together based on server capacity and contributor count:
