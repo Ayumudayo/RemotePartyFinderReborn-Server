@@ -4,9 +4,10 @@ use chrono::Utc;
 use hmac::{Hmac, Mac};
 use remote_party_finder_reborn::config::Config;
 use remote_party_finder_reborn::listings_snapshot::{
-    allocate_materialized_revision, build_listings_payload, load_current_materialized_doc,
-    load_listing_source_state, serialize_snapshot, try_acquire_snapshot_worker_lease,
-    try_renew_snapshot_worker_lease, try_write_materialized_snapshot_cas,
+    allocate_materialized_revision, build_listings_payload, ensure_materialized_revision_at_least,
+    load_current_materialized_doc, load_listing_source_state, serialize_snapshot,
+    try_acquire_snapshot_worker_lease, try_renew_snapshot_worker_lease,
+    try_write_materialized_snapshot_cas,
 };
 use remote_party_finder_reborn::web::State;
 use sha2::Sha256;
@@ -85,7 +86,7 @@ async fn run() -> anyhow::Result<()> {
     let force_interval =
         Duration::from_secs(config.snapshot_worker.force_rebuild_interval_seconds.max(1));
     let lease_ttl_seconds = config.snapshot_worker.lease_ttl_seconds.max(1) as i64;
-    let state = State::new(Arc::clone(&config)).await?;
+    let state = State::new_for_snapshot_worker(Arc::clone(&config)).await?;
     let client = build_refresh_client()?;
     let mut last_source_revision = None;
     let mut last_forced_build_at = Instant::now();
@@ -194,6 +195,14 @@ async fn run_tick(
         }
 
         let revision_collection = state.listing_snapshot_revision_state_collection();
+        if let Some(doc) = current_doc.as_ref() {
+            ensure_materialized_revision_at_least(
+                &revision_collection,
+                &state.listings_snapshot_document_id,
+                doc.revision,
+            )
+            .await?;
+        }
         let revision = allocate_materialized_revision(
             &revision_collection,
             &state.listings_snapshot_document_id,

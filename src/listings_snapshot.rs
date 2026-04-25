@@ -270,6 +270,37 @@ pub fn materialized_revision_allocate_update(
     (filter, update, options)
 }
 
+pub fn materialized_revision_seed_update(
+    document_id: &str,
+    updated_at: DateTime<Utc>,
+    minimum_revision: i64,
+) -> (Document, Document, UpdateOptions) {
+    let filter = doc! { "_id": document_id };
+    let update = doc! {
+        "$max": { "revision": minimum_revision },
+        "$set": { "updated_at": mongodb::bson::DateTime::from_chrono(updated_at) },
+        "$setOnInsert": { "_id": document_id },
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
+
+    (filter, update, options)
+}
+
+pub async fn ensure_materialized_revision_at_least(
+    collection: &Collection<ListingSnapshotRevisionStateDoc>,
+    id: &str,
+    minimum_revision: i64,
+) -> anyhow::Result<()> {
+    let (filter, update, options) =
+        materialized_revision_seed_update(id, Utc::now(), minimum_revision.max(0));
+    collection
+        .update_one(filter, update, options)
+        .await
+        .context("failed to seed materialized listings snapshot revision")?;
+
+    Ok(())
+}
+
 pub async fn allocate_materialized_revision(
     collection: &Collection<ListingSnapshotRevisionStateDoc>,
     id: &str,
@@ -888,6 +919,29 @@ mod tests {
             options.return_document,
             Some(ReturnDocument::After)
         ));
+    }
+
+    #[test]
+    fn materialized_revision_seed_update_keeps_counter_at_least_current_snapshot() {
+        let now = Utc::now();
+        let (filter, update, options) = materialized_revision_seed_update("current", now, 42);
+
+        assert_eq!(filter, mongodb::bson::doc! { "_id": "current" });
+        assert_eq!(
+            update.get_document("$max").unwrap(),
+            &mongodb::bson::doc! { "revision": 42_i64 }
+        );
+        assert_eq!(
+            update.get_document("$set").unwrap(),
+            &mongodb::bson::doc! {
+                "updated_at": mongodb::bson::DateTime::from_chrono(now)
+            }
+        );
+        assert_eq!(
+            update.get_document("$setOnInsert").unwrap(),
+            &mongodb::bson::doc! { "_id": "current" }
+        );
+        assert_eq!(options.upsert, Some(true));
     }
 
     #[test]

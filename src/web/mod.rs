@@ -176,6 +176,18 @@ pub enum ListingsSnapshotCacheState {
     Ready(CachedListingsSnapshot),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateInitMode {
+    WebServer,
+    SnapshotWorker,
+}
+
+impl StateInitMode {
+    pub fn maintain_indexes(self) -> bool {
+        matches!(self, Self::WebServer)
+    }
+}
+
 #[derive(Debug, serde::Deserialize)]
 #[allow(dead_code)]
 struct PlayerDuplicateGroup {
@@ -247,6 +259,14 @@ fn duplicate_ids_to_remove(group: &PlayerDuplicateGroup) -> Vec<mongodb::bson::o
 
 impl State {
     pub async fn new(config: Arc<Config>) -> Result<Arc<Self>> {
+        Self::new_with_mode(config, StateInitMode::WebServer).await
+    }
+
+    pub async fn new_for_snapshot_worker(config: Arc<Config>) -> Result<Arc<Self>> {
+        Self::new_with_mode(config, StateInitMode::SnapshotWorker).await
+    }
+
+    async fn new_with_mode(config: Arc<Config>, mode: StateInitMode) -> Result<Arc<Self>> {
         config.validate()?;
 
         let mongo = MongoClient::with_uri_str(&config.mongo.url)
@@ -373,8 +393,9 @@ impl State {
             monitor_snapshot_interval_seconds: config.web.monitor_snapshot_interval_seconds,
         });
 
-        // Initialize Indexes
-        state.ensure_indexes().await?;
+        if mode.maintain_indexes() {
+            state.ensure_indexes().await?;
+        }
 
         Ok(state)
     }
@@ -616,7 +637,7 @@ mod tests {
     use super::{
         duplicate_ids_to_remove, players_content_id_dedupe_pipeline,
         players_content_id_unique_index_model, report_parse_summary_identity_index_model,
-        PlayerDuplicateGroup,
+        PlayerDuplicateGroup, StateInitMode,
     };
     use mongodb::bson::{doc, oid::ObjectId};
 
@@ -679,5 +700,11 @@ mod tests {
 
         assert_eq!(group.count, 3);
         assert_eq!(to_remove, vec![loser_a, loser_b]);
+    }
+
+    #[test]
+    fn snapshot_worker_state_init_skips_web_index_maintenance() {
+        assert!(StateInitMode::WebServer.maintain_indexes());
+        assert!(!StateInitMode::SnapshotWorker.maintain_indexes());
     }
 }
