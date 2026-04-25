@@ -9,9 +9,11 @@ use anyhow::Context;
 use base64::encode as base64_encode;
 use chrono::{TimeDelta, Utc};
 use hmac::{Hmac, Mac};
+use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
-use std::sync::{atomic::Ordering as AtomicOrdering, Arc};
+use std::sync::{atomic::Ordering as AtomicOrdering, Arc, Mutex, OnceLock, Weak};
+use std::time::{Duration, Instant};
 use tokio::sync::{Notify, RwLock};
 use warp::filters::BoxedFilter;
 use warp::http::{
@@ -22,6 +24,55 @@ use warp::hyper::Body;
 use warp::{Filter, Reply};
 
 const SNAPSHOT_REFRESH_PATH: &str = "/internal/listings/snapshot/refresh";
+const MIN_MATERIALIZED_SNAPSHOT_REQUEST_RECONCILE_INTERVAL_SECONDS: u64 = 5;
+
+type MaterializedSnapshotFreshnessChecks = HashMap<usize, (Weak<State>, Instant)>;
+
+fn materialized_snapshot_freshness_checks() -> &'static Mutex<MaterializedSnapshotFreshnessChecks> {
+    static CHECKS: OnceLock<Mutex<MaterializedSnapshotFreshnessChecks>> = OnceLock::new();
+    CHECKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn materialized_snapshot_request_reconcile_interval(state: &State) -> Duration {
+    Duration::from_secs(
+        state
+            .materialized_snapshot_reconcile_interval_seconds
+            .max(MIN_MATERIALIZED_SNAPSHOT_REQUEST_RECONCILE_INTERVAL_SECONDS),
+    )
+}
+
+fn record_materialized_snapshot_freshness_check(state: &Arc<State>, checked_at: Instant) {
+    let key = Arc::as_ptr(state) as usize;
+    let mut checks = materialized_snapshot_freshness_checks()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    checks.retain(|_, (state, _)| state.strong_count() > 0);
+    checks.insert(key, (Arc::downgrade(state), checked_at));
+}
+
+fn should_check_materialized_snapshot_freshness(state: &Arc<State>) -> bool {
+    let key = Arc::as_ptr(state) as usize;
+    let now = Instant::now();
+    let interval = materialized_snapshot_request_reconcile_interval(state);
+    let mut checks = materialized_snapshot_freshness_checks()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    checks.retain(|_, (state, _)| state.strong_count() > 0);
+
+    if let Some((cached_state, last_checked_at)) = checks.get(&key) {
+        if cached_state.strong_count() > 0
+            && now
+                .checked_duration_since(*last_checked_at)
+                .unwrap_or_default()
+                < interval
+        {
+            return false;
+        }
+    }
+
+    checks.insert(key, (Arc::downgrade(state), now));
+    true
+}
 
 pub fn api(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
     warp::path("api")
@@ -169,17 +220,39 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = anyhow::Result<Option<CachedListingsSnapshot>>>,
 {
-    {
+    let cached_candidate = {
         let cache = state.listings_snapshot_cache.read().await;
         if let ListingsSnapshotCacheState::Ready(snapshot) = &*cache {
             if snapshot.revision >= state.current_listings_revision() {
-                return Ok(Some(snapshot.clone()));
+                Some(snapshot.clone())
+            } else {
+                None
             }
+        } else {
+            None
+        }
+    };
+
+    if let Some(snapshot) = &cached_candidate {
+        if !should_check_materialized_snapshot_freshness(&state) {
+            return Ok(Some(snapshot.clone()));
         }
     }
 
-    let Some(snapshot) = load().await? else {
-        return Ok(None);
+    let loaded = match load().await {
+        Ok(snapshot) => snapshot,
+        Err(error) if cached_candidate.is_some() => {
+            tracing::warn!(
+                error = ?error,
+                "failed opportunistic materialized listings snapshot freshness check; serving cached snapshot"
+            );
+            return Ok(cached_candidate);
+        }
+        Err(error) => return Err(error),
+    };
+
+    let Some(snapshot) = loaded else {
+        return Ok(cached_candidate);
     };
 
     let outcome = apply_materialized_snapshot_if_newer(&state, snapshot.clone()).await;
@@ -307,7 +380,9 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = anyhow::Result<Option<CachedListingsSnapshot>>>,
 {
-    let Some(snapshot) = load().await? else {
+    let loaded = load().await;
+    record_materialized_snapshot_freshness_check(&state, Instant::now());
+    let Some(snapshot) = loaded? else {
         tracing::debug!("materialized listings snapshot is not ready during reconciliation");
         return Ok(ApplyMaterializedSnapshotOutcome {
             applied_revision: None,
@@ -326,15 +401,60 @@ pub(crate) async fn reconcile_materialized_snapshot_once(
     .await
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct SnapshotRefreshRequest {
+    document_id: String,
+    expected_revision: u64,
+}
+
 async fn refresh_materialized_snapshot_with_loader<F, Fut>(
     state: Arc<State>,
+    request: SnapshotRefreshRequest,
     load: F,
 ) -> anyhow::Result<ApplyMaterializedSnapshotOutcome>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = anyhow::Result<Option<CachedListingsSnapshot>>>,
 {
-    reconcile_materialized_snapshot_once_with_loader(state, load).await
+    if request.document_id != state.listings_snapshot_document_id {
+        anyhow::bail!(
+            "snapshot refresh document id mismatch: request document id {} does not match server document id {}",
+            request.document_id,
+            state.listings_snapshot_document_id
+        );
+    }
+
+    let loaded = load().await;
+    record_materialized_snapshot_freshness_check(&state, Instant::now());
+    let Some(snapshot) = loaded? else {
+        anyhow::bail!(
+            "materialized listings snapshot missing for expected revision {}",
+            request.expected_revision
+        );
+    };
+
+    if snapshot.revision < request.expected_revision {
+        anyhow::bail!(
+            "materialized listings snapshot revision {} is older than expected revision {}",
+            snapshot.revision,
+            request.expected_revision
+        );
+    }
+
+    let outcome = apply_materialized_snapshot_if_newer(&state, snapshot.clone()).await;
+    if outcome.applied_revision.is_none() {
+        let current_revision = state.current_listings_revision();
+        if snapshot.revision >= current_revision {
+            let mut cache = state.listings_snapshot_cache.write().await;
+            if matches!(&*cache, ListingsSnapshotCacheState::Empty)
+                || matches!(&*cache, ListingsSnapshotCacheState::Ready(cached) if cached.revision < snapshot.revision)
+            {
+                *cache = ListingsSnapshotCacheState::Ready(snapshot);
+            }
+        }
+    }
+
+    Ok(outcome)
 }
 
 #[derive(Debug)]
@@ -372,7 +492,7 @@ fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
 async fn authorize_snapshot_refresh_request(
     state: &Arc<State>,
     headers: &HeaderMap,
-) -> Result<(), SnapshotRefreshAuthError> {
+) -> Result<SnapshotRefreshRequest, SnapshotRefreshAuthError> {
     let client_id = header_value(headers, "x-rpf-client-id")
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -386,6 +506,28 @@ async fn authorize_snapshot_refresh_request(
             message: "invalid client id",
         });
     }
+
+    let document_id = header_value(headers, "x-rpf-snapshot-document-id")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(SnapshotRefreshAuthError {
+            status: StatusCode::BAD_REQUEST,
+            message: "missing snapshot document id",
+        })?;
+    let expected_revision_raw = header_value(headers, "x-rpf-expected-revision")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or(SnapshotRefreshAuthError {
+            status: StatusCode::BAD_REQUEST,
+            message: "missing expected revision",
+        })?;
+    let expected_revision =
+        expected_revision_raw
+            .parse::<u64>()
+            .map_err(|_| SnapshotRefreshAuthError {
+                status: StatusCode::BAD_REQUEST,
+                message: "invalid expected revision",
+            })?;
 
     match header_value(headers, "x-rpf-signature-version") {
         Some("v1") => {}
@@ -418,7 +560,7 @@ async fn authorize_snapshot_refresh_request(
             message: "invalid timestamp",
         })?;
     let skew = (Utc::now().timestamp() - timestamp).abs();
-    if skew > state.ingest_security.clock_skew_seconds {
+    if skew > state.snapshot_refresh_clock_skew_seconds {
         return Err(SnapshotRefreshAuthError {
             status: StatusCode::FORBIDDEN,
             message: "timestamp skew exceeded",
@@ -426,8 +568,8 @@ async fn authorize_snapshot_refresh_request(
     }
 
     let payload = format!(
-        "POST\n{}\n{}\n{}\n{}",
-        SNAPSHOT_REFRESH_PATH, timestamp_raw, nonce, client_id
+        "POST\n{}\n{}\n{}\n{}\n{}\n{}",
+        SNAPSHOT_REFRESH_PATH, timestamp_raw, nonce, client_id, document_id, expected_revision
     );
     let expected = compute_refresh_signature(&state.snapshot_refresh_shared_secret, &payload)
         .map_err(|_| SnapshotRefreshAuthError {
@@ -441,7 +583,7 @@ async fn authorize_snapshot_refresh_request(
         });
     }
 
-    let Some(ttl) = TimeDelta::try_seconds(state.ingest_security.nonce_ttl_seconds) else {
+    let Some(ttl) = TimeDelta::try_seconds(state.snapshot_refresh_nonce_ttl_seconds) else {
         return Err(SnapshotRefreshAuthError {
             status: StatusCode::BAD_REQUEST,
             message: "invalid nonce ttl",
@@ -450,7 +592,7 @@ async fn authorize_snapshot_refresh_request(
 
     let now = Utc::now();
     let nonce_key = format!("snapshot-refresh:{client_id}:{nonce}");
-    let mut nonces = state.ingest_nonces.write().await;
+    let mut nonces = state.snapshot_refresh_nonces.write().await;
     nonces.retain(|_, seen_at| *seen_at + ttl > now);
     if nonces.contains_key(&nonce_key) {
         return Err(SnapshotRefreshAuthError {
@@ -460,7 +602,10 @@ async fn authorize_snapshot_refresh_request(
     }
 
     nonces.insert(nonce_key, now);
-    Ok(())
+    Ok(SnapshotRefreshRequest {
+        document_id: document_id.to_string(),
+        expected_revision,
+    })
 }
 
 fn listings_snapshot(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
@@ -506,10 +651,17 @@ fn snapshot_refresh(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         let response = if state.listings_snapshot_source != ListingsSnapshotSource::Materialized {
             warp::reply::with_status("snapshot refresh disabled", StatusCode::NOT_FOUND)
                 .into_response()
-        } else if let Err(error) = authorize_snapshot_refresh_request(&state, &headers).await {
-            warp::reply::with_status(error.message, error.status).into_response()
         } else {
-            match refresh_materialized_snapshot_with_loader(Arc::clone(&state), || async {
+            let request = match authorize_snapshot_refresh_request(&state, &headers).await {
+                Ok(request) => request,
+                Err(error) => {
+                    return Ok(
+                        warp::reply::with_status(error.message, error.status).into_response()
+                    );
+                }
+            };
+
+            match refresh_materialized_snapshot_with_loader(Arc::clone(&state), request, || async {
                 load_current_materialized_snapshot(&state).await
             })
             .await
@@ -591,6 +743,7 @@ mod tests {
         get_or_build_cached_snapshot, materialized_snapshot_result_response,
         reconcile_materialized_snapshot_once_with_loader,
         refresh_materialized_snapshot_with_loader, snapshot_json_response, CachedListingsSnapshot,
+        SnapshotRefreshRequest,
     };
 
     fn sample_listing() -> PartyFinderListing {
@@ -651,6 +804,14 @@ mod tests {
     }
 
     async fn test_state(source: ListingsSnapshotSource, current_revision: u64) -> Arc<State> {
+        test_state_with_ingest_skew(source, current_revision, 300).await
+    }
+
+    async fn test_state_with_ingest_skew(
+        source: ListingsSnapshotSource,
+        current_revision: u64,
+        ingest_clock_skew_seconds: i64,
+    ) -> Arc<State> {
         let mongo = Client::with_uri_str("mongodb://127.0.0.1:27017")
             .await
             .expect("construct test mongo client");
@@ -677,6 +838,8 @@ mod tests {
             materialized_snapshot_reconcile_interval_seconds: 30,
             snapshot_refresh_shared_secret: "refresh-secret".to_string(),
             snapshot_refresh_client_id: "listings-snapshot-worker".to_string(),
+            snapshot_refresh_clock_skew_seconds: 300,
+            snapshot_refresh_nonce_ttl_seconds: 300,
             fflogs_jobs_limit: 1,
             fflogs_hidden_cache_ttl_hours: 24,
             listing_upsert_concurrency: 1,
@@ -693,7 +856,7 @@ mod tests {
             ingest_security: IngestSecurityConfig {
                 require_signature: false,
                 shared_secret: "public-ingest-secret".to_string(),
-                clock_skew_seconds: 300,
+                clock_skew_seconds: ingest_clock_skew_seconds,
                 nonce_ttl_seconds: 300,
                 require_capabilities_for_protected_endpoints: false,
                 capability_secret: "test-capability-secret".to_string(),
@@ -710,6 +873,7 @@ mod tests {
             },
             ingest_rate_windows: RwLock::new(HashMap::new()),
             ingest_nonces: RwLock::new(HashMap::new()),
+            snapshot_refresh_nonces: RwLock::new(HashMap::new()),
             fflogs_job_leases: RwLock::new(HashMap::new()),
             fflogs_jobs_dispatched_total: Default::default(),
             fflogs_results_received_total: Default::default(),
@@ -722,11 +886,35 @@ mod tests {
         })
     }
 
-    fn signed_refresh_headers(secret: &str, client_id: &str, nonce: &str) -> HeaderMap {
-        let timestamp = Utc::now().timestamp().to_string();
+    fn signed_refresh_headers(
+        secret: &str,
+        client_id: &str,
+        nonce: &str,
+        document_id: &str,
+        expected_revision: u64,
+    ) -> HeaderMap {
+        signed_refresh_headers_at(
+            secret,
+            client_id,
+            nonce,
+            document_id,
+            expected_revision,
+            Utc::now().timestamp(),
+        )
+    }
+
+    fn signed_refresh_headers_at(
+        secret: &str,
+        client_id: &str,
+        nonce: &str,
+        document_id: &str,
+        expected_revision: u64,
+        timestamp: i64,
+    ) -> HeaderMap {
+        let timestamp = timestamp.to_string();
         let payload = format!(
-            "POST\n/internal/listings/snapshot/refresh\n{}\n{}\n{}",
-            timestamp, nonce, client_id
+            "POST\n/internal/listings/snapshot/refresh\n{}\n{}\n{}\n{}\n{}",
+            timestamp, nonce, client_id, document_id, expected_revision
         );
         let mut mac =
             Hmac::<Sha256>::new_from_slice(secret.as_bytes()).expect("test hmac should initialize");
@@ -735,6 +923,14 @@ mod tests {
 
         let mut headers = HeaderMap::new();
         headers.insert("x-rpf-client-id", HeaderValue::from_str(client_id).unwrap());
+        headers.insert(
+            "x-rpf-snapshot-document-id",
+            HeaderValue::from_str(document_id).unwrap(),
+        );
+        headers.insert(
+            "x-rpf-expected-revision",
+            HeaderValue::from_str(&expected_revision.to_string()).unwrap(),
+        );
         headers.insert(
             "x-rpf-timestamp",
             HeaderValue::from_str(&timestamp).unwrap(),
@@ -1024,7 +1220,7 @@ mod tests {
             .await
             .is_err());
 
-        let mut bad = signed_refresh_headers("wrong-secret", "worker", "bad-nonce");
+        let mut bad = signed_refresh_headers("wrong-secret", "worker", "bad-nonce", "current", 6);
         assert!(authorize_snapshot_refresh_request(&state, &bad)
             .await
             .is_err());
@@ -1033,6 +1229,8 @@ mod tests {
             "refresh-secret",
             "listings-snapshot-worker",
             "replayed-nonce",
+            "current",
+            6,
         );
         authorize_snapshot_refresh_request(&state, &bad)
             .await
@@ -1042,13 +1240,129 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn refresh_signature_rejects_missing_expected_revision() {
+        let state = test_state(ListingsSnapshotSource::Materialized, 5).await;
+        let timestamp = Utc::now().timestamp().to_string();
+        let nonce = "missing-expected-revision";
+        let client_id = "listings-snapshot-worker";
+        let payload = format!(
+            "POST\n/internal/listings/snapshot/refresh\n{}\n{}\n{}",
+            timestamp, nonce, client_id
+        );
+        let mut mac =
+            Hmac::<Sha256>::new_from_slice(b"refresh-secret").expect("test hmac should initialize");
+        mac.update(payload.as_bytes());
+        let signature = base64::encode(mac.finalize().into_bytes());
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-rpf-client-id", HeaderValue::from_static(client_id));
+        headers.insert(
+            "x-rpf-snapshot-document-id",
+            HeaderValue::from_static("current"),
+        );
+        headers.insert(
+            "x-rpf-timestamp",
+            HeaderValue::from_str(&timestamp).unwrap(),
+        );
+        headers.insert("x-rpf-nonce", HeaderValue::from_static(nonce));
+        headers.insert("x-rpf-signature-version", HeaderValue::from_static("v1"));
+        headers.insert(
+            "x-rpf-signature",
+            HeaderValue::from_str(&signature).unwrap(),
+        );
+
+        let error = authorize_snapshot_refresh_request(&state, &headers)
+            .await
+            .expect_err("refresh auth must require expected revision");
+
+        assert_eq!(error.status, StatusCode::BAD_REQUEST);
+        assert!(
+            error.message.contains("expected revision"),
+            "unexpected auth error: {}",
+            error.message
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_signature_uses_snapshot_refresh_skew_independent_of_public_ingest_skew() {
+        let state = test_state_with_ingest_skew(ListingsSnapshotSource::Materialized, 5, 1).await;
+        let headers = signed_refresh_headers_at(
+            "refresh-secret",
+            "listings-snapshot-worker",
+            "snapshot-skew-independent",
+            "current",
+            6,
+            Utc::now().timestamp() - 2,
+        );
+
+        authorize_snapshot_refresh_request(&state, &headers)
+            .await
+            .expect("snapshot refresh skew should not use public ingest skew");
+    }
+
+    #[tokio::test]
+    async fn refresh_signature_uses_dedicated_nonce_store() {
+        let state = test_state(ListingsSnapshotSource::Materialized, 5).await;
+        let nonce = "dedicated-refresh-nonce";
+        state.ingest_nonces.write().await.insert(
+            format!("snapshot-refresh:listings-snapshot-worker:{nonce}"),
+            Utc::now(),
+        );
+        let headers = signed_refresh_headers(
+            "refresh-secret",
+            "listings-snapshot-worker",
+            nonce,
+            "current",
+            6,
+        );
+
+        authorize_snapshot_refresh_request(&state, &headers)
+            .await
+            .expect("public ingest nonce store must not affect snapshot refresh nonces");
+
+        assert_eq!(state.ingest_nonces.read().await.len(), 1);
+        assert!(state
+            .snapshot_refresh_nonces
+            .read()
+            .await
+            .contains_key(&format!(
+                "snapshot-refresh:listings-snapshot-worker:{nonce}"
+            )));
+    }
+
+    #[tokio::test]
+    async fn refresh_signature_rejects_timestamp_outside_snapshot_refresh_skew() {
+        let state = test_state(ListingsSnapshotSource::Materialized, 5).await;
+        let headers = signed_refresh_headers_at(
+            "refresh-secret",
+            "listings-snapshot-worker",
+            "snapshot-skew-too-old",
+            "current",
+            6,
+            Utc::now().timestamp() - 301,
+        );
+
+        let error = authorize_snapshot_refresh_request(&state, &headers)
+            .await
+            .expect_err("snapshot refresh skew should reject old timestamps");
+
+        assert_eq!(error.status, StatusCode::FORBIDDEN);
+        assert_eq!(error.message, "timestamp skew exceeded");
+    }
+
+    #[tokio::test]
     async fn valid_refresh_broadcasts_only_after_snapshot_revision_advances() {
         let state = test_state(ListingsSnapshotSource::Materialized, 7).await;
         let mut receiver = state.listings_change_channel.subscribe();
 
-        let same = refresh_materialized_snapshot_with_loader(Arc::clone(&state), || async {
-            Ok(Some(sample_cached_snapshot(7)))
-        })
+        let same = refresh_materialized_snapshot_with_loader(
+            Arc::clone(&state),
+            SnapshotRefreshRequest {
+                document_id: "current".to_string(),
+                expected_revision: 7,
+            },
+            || async { Ok(Some(sample_cached_snapshot(7))) },
+        )
         .await
         .expect("same revision refresh should succeed");
 
@@ -1060,14 +1374,61 @@ mod tests {
             "same revision refresh must not broadcast"
         );
 
-        let advanced = refresh_materialized_snapshot_with_loader(Arc::clone(&state), || async {
-            Ok(Some(sample_cached_snapshot(8)))
-        })
+        let advanced = refresh_materialized_snapshot_with_loader(
+            Arc::clone(&state),
+            SnapshotRefreshRequest {
+                document_id: "current".to_string(),
+                expected_revision: 8,
+            },
+            || async { Ok(Some(sample_cached_snapshot(8))) },
+        )
         .await
         .expect("advanced revision refresh should succeed");
 
         assert_eq!(advanced.applied_revision, Some(8));
         assert_eq!(receiver.recv().await.expect("revision should broadcast"), 8);
+    }
+
+    #[tokio::test]
+    async fn refresh_fails_when_loaded_snapshot_is_older_than_expected_revision() {
+        let state = test_state(ListingsSnapshotSource::Materialized, 7).await;
+
+        let error = refresh_materialized_snapshot_with_loader(
+            Arc::clone(&state),
+            SnapshotRefreshRequest {
+                document_id: "current".to_string(),
+                expected_revision: 8,
+            },
+            || async { Ok(Some(sample_cached_snapshot(7))) },
+        )
+        .await
+        .expect_err("refresh must fail when Mongo snapshot is older than worker expectation");
+
+        assert!(
+            error.to_string().contains("expected revision"),
+            "unexpected refresh error: {error:#}"
+        );
+    }
+
+    #[tokio::test]
+    async fn refresh_fails_when_expected_document_id_differs_from_server_document_id() {
+        let state = test_state(ListingsSnapshotSource::Materialized, 7).await;
+
+        let error = refresh_materialized_snapshot_with_loader(
+            Arc::clone(&state),
+            SnapshotRefreshRequest {
+                document_id: "other-current".to_string(),
+                expected_revision: 8,
+            },
+            || async { Ok(Some(sample_cached_snapshot(8))) },
+        )
+        .await
+        .expect_err("refresh must fail when worker and server target different snapshot docs");
+
+        assert!(
+            error.to_string().contains("document id"),
+            "unexpected refresh error: {error:#}"
+        );
     }
 
     #[tokio::test]
@@ -1101,5 +1462,46 @@ mod tests {
 
         assert_eq!(loads.load(Ordering::SeqCst), 1);
         assert_eq!(snapshot.revision, 8);
+    }
+
+    #[tokio::test]
+    async fn materialized_snapshot_fetch_reconciles_stale_process_revision_on_cadence() {
+        let state = test_state(ListingsSnapshotSource::Materialized, 7).await;
+        *state.listings_snapshot_cache.write().await =
+            ListingsSnapshotCacheState::Ready(sample_cached_snapshot(7));
+        let loads = Arc::new(AtomicUsize::new(0));
+
+        let snapshot = get_materialized_cached_snapshot_with_loader(Arc::clone(&state), {
+            let loads = Arc::clone(&loads);
+            || async move {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(sample_cached_snapshot(8)))
+            }
+        })
+        .await
+        .expect("materialized snapshot lookup should succeed")
+        .expect("loader should return a snapshot");
+
+        assert_eq!(snapshot.revision, 8);
+        assert_eq!(state.current_listings_revision(), 8);
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+
+        let cached = get_materialized_cached_snapshot_with_loader(Arc::clone(&state), {
+            let loads = Arc::clone(&loads);
+            || async move {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(sample_cached_snapshot(9)))
+            }
+        })
+        .await
+        .expect("materialized snapshot lookup should succeed")
+        .expect("cache should remain ready");
+
+        assert_eq!(cached.revision, 8);
+        assert_eq!(
+            loads.load(Ordering::SeqCst),
+            1,
+            "freshness cadence should avoid loading Mongo on every request"
+        );
     }
 }

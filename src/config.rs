@@ -2,6 +2,38 @@ use anyhow::{bail, Result};
 use serde::Deserialize;
 use std::net::SocketAddr;
 
+const SNAPSHOT_REFRESH_PATH: &str = "/internal/listings/snapshot/refresh";
+
+fn validate_trimmed_non_empty(value: &str, field: &str, context: &str) -> Result<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        bail!("{field} must be set when {context}");
+    }
+    if trimmed.len() != value.len() {
+        bail!("{field} must not contain leading or trailing whitespace when {context}");
+    }
+    Ok(())
+}
+
+fn is_local_snapshot_refresh_url(url: &reqwest::Url) -> bool {
+    url.host_str().is_some_and(|host| {
+        host.eq_ignore_ascii_case("localhost")
+            || host == "127.0.0.1"
+            || host == "::1"
+            || host == "[::1]"
+    })
+}
+
+fn validate_snapshot_refresh_url_transport(url: &reqwest::Url) -> Result<()> {
+    match url.scheme() {
+        "https" => Ok(()),
+        "http" if is_local_snapshot_refresh_url(url) => Ok(()),
+        _ => bail!(
+            "snapshot_worker.refresh_url must use https except for local testing URLs on localhost, 127.0.0.1, or [::1]"
+        ),
+    }
+}
+
 fn default_fflogs_jobs_limit() -> usize {
     20
 }
@@ -158,6 +190,14 @@ fn default_snapshot_refresh_client_id() -> String {
     "listings-snapshot-worker".to_string()
 }
 
+fn default_snapshot_refresh_clock_skew_seconds() -> i64 {
+    300
+}
+
+fn default_snapshot_refresh_nonce_ttl_seconds() -> i64 {
+    300
+}
+
 fn default_snapshot_worker_enabled() -> bool {
     true
 }
@@ -215,6 +255,19 @@ impl Config {
             );
         }
 
+        if self.web.listings_snapshot_source == ListingsSnapshotSource::Materialized {
+            validate_trimmed_non_empty(
+                &self.web.listings_snapshot_document_id,
+                "web.listings_snapshot_document_id",
+                "listings_snapshot_source is materialized",
+            )?;
+            validate_trimmed_non_empty(
+                &self.web.snapshot_refresh_client_id,
+                "web.snapshot_refresh_client_id",
+                "listings_snapshot_source is materialized",
+            )?;
+        }
+
         Ok(())
     }
 
@@ -233,8 +286,30 @@ impl Config {
             bail!("web.snapshot_refresh_shared_secret must be set when snapshot_worker.enabled is true");
         }
 
-        if self.snapshot_worker.refresh_url.trim().is_empty() {
+        validate_trimmed_non_empty(
+            &self.web.listings_snapshot_document_id,
+            "web.listings_snapshot_document_id",
+            "snapshot_worker.enabled is true",
+        )?;
+        validate_trimmed_non_empty(
+            &self.web.snapshot_refresh_client_id,
+            "web.snapshot_refresh_client_id",
+            "snapshot_worker.enabled is true",
+        )?;
+
+        let refresh_url = self.snapshot_worker.refresh_url.trim();
+        if refresh_url.is_empty() {
             bail!("snapshot_worker.refresh_url must be set when snapshot_worker.enabled is true");
+        }
+
+        let Ok(refresh_url) = reqwest::Url::parse(refresh_url) else {
+            bail!("snapshot_worker.refresh_url must be an absolute URL when snapshot_worker.enabled is true");
+        };
+        validate_snapshot_refresh_url_transport(&refresh_url)?;
+        if refresh_url.path() != SNAPSHOT_REFRESH_PATH {
+            bail!(
+                "snapshot_worker.refresh_url path must be {SNAPSHOT_REFRESH_PATH} because refresh signatures cover that path"
+            );
         }
 
         Ok(())
@@ -322,6 +397,10 @@ pub struct Web {
     pub snapshot_refresh_shared_secret: String,
     #[serde(default = "default_snapshot_refresh_client_id")]
     pub snapshot_refresh_client_id: String,
+    #[serde(default = "default_snapshot_refresh_clock_skew_seconds")]
+    pub snapshot_refresh_clock_skew_seconds: i64,
+    #[serde(default = "default_snapshot_refresh_nonce_ttl_seconds")]
+    pub snapshot_refresh_nonce_ttl_seconds: i64,
 }
 
 #[derive(Deserialize)]
@@ -414,6 +493,8 @@ url = "mongodb://127.0.0.1:27017"
             config.web.snapshot_refresh_client_id,
             "listings-snapshot-worker"
         );
+        assert_eq!(config.web.snapshot_refresh_clock_skew_seconds, 300);
+        assert_eq!(config.web.snapshot_refresh_nonce_ttl_seconds, 300);
         config
             .validate_for_server()
             .expect("inline mode may use a blank refresh secret");
@@ -436,6 +517,30 @@ snapshot_refresh_shared_secret = "   "
         assert!(
             error.to_string().contains("snapshot_refresh_shared_secret"),
             "unexpected validation error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn materialized_snapshot_source_rejects_whitespace_padded_refresh_identity() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+listings_snapshot_document_id = " current "
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+snapshot_refresh_client_id = " listings-snapshot-worker "
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_server()
+            .expect_err("materialized server mode must reject ambiguous refresh identity config");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("listings_snapshot_document_id")
+                || message.contains("snapshot_refresh_client_id"),
+            "unexpected validation error: {message}"
         );
     }
 
@@ -481,6 +586,175 @@ refresh_url = " "
             message.contains("snapshot_refresh_shared_secret")
                 || message.contains("snapshot_worker.refresh_url"),
             "unexpected validation error: {message}"
+        );
+    }
+
+    #[test]
+    fn snapshot_worker_validation_rejects_blank_refresh_client_id_when_enabled() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+snapshot_refresh_client_id = "   "
+
+[snapshot_worker]
+enabled = true
+refresh_url = "https://example.test/internal/listings/snapshot/refresh"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_snapshot_worker()
+            .expect_err("enabled worker must require refresh client id");
+
+        assert!(
+            error.to_string().contains("snapshot_refresh_client_id"),
+            "unexpected validation error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn snapshot_worker_validation_rejects_whitespace_padded_refresh_identity() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+listings_snapshot_document_id = " current "
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+snapshot_refresh_client_id = " listings-snapshot-worker "
+
+[snapshot_worker]
+enabled = true
+refresh_url = "https://example.test/internal/listings/snapshot/refresh"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_snapshot_worker()
+            .expect_err("enabled worker must reject ambiguous refresh identity config");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("listings_snapshot_document_id")
+                || message.contains("snapshot_refresh_client_id"),
+            "unexpected validation error: {message}"
+        );
+    }
+
+    #[test]
+    fn snapshot_worker_validation_rejects_refresh_url_with_wrong_path() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+
+[snapshot_worker]
+enabled = true
+refresh_url = "https://example.test/internal/listings/snapshot/wrong"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_snapshot_worker()
+            .expect_err("enabled worker must target the signed refresh path");
+
+        assert!(
+            error.to_string().contains("snapshot_worker.refresh_url"),
+            "unexpected validation error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn snapshot_worker_validation_accepts_https_refresh_url() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+
+[snapshot_worker]
+enabled = true
+refresh_url = "https://example.test/internal/listings/snapshot/refresh"
+"#,
+        ))
+        .expect("config should parse");
+
+        config
+            .validate_for_snapshot_worker()
+            .expect("https refresh URL should be accepted");
+    }
+
+    #[test]
+    fn snapshot_worker_validation_accepts_localhost_http_refresh_url() {
+        for refresh_url in [
+            "http://localhost/internal/listings/snapshot/refresh",
+            "http://127.0.0.1/internal/listings/snapshot/refresh",
+            "http://[::1]/internal/listings/snapshot/refresh",
+        ] {
+            let config: Config = toml::from_str(&minimal_config_toml(&format!(
+                r#"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+
+[snapshot_worker]
+enabled = true
+refresh_url = "{refresh_url}"
+"#
+            )))
+            .expect("config should parse");
+
+            config
+                .validate_for_snapshot_worker()
+                .unwrap_or_else(|error| panic!("{refresh_url} should be accepted: {error:#}"));
+        }
+    }
+
+    #[test]
+    fn snapshot_worker_validation_rejects_ftp_refresh_url() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+
+[snapshot_worker]
+enabled = true
+refresh_url = "ftp://example.test/internal/listings/snapshot/refresh"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_snapshot_worker()
+            .expect_err("enabled worker must reject non-http refresh URL schemes");
+
+        assert!(
+            error.to_string().contains("snapshot_worker.refresh_url"),
+            "unexpected validation error: {error:#}"
+        );
+    }
+
+    #[test]
+    fn snapshot_worker_validation_rejects_non_localhost_http_refresh_url() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+
+[snapshot_worker]
+enabled = true
+refresh_url = "http://example.test/internal/listings/snapshot/refresh"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_snapshot_worker()
+            .expect_err("enabled worker must require https for non-localhost refresh URLs");
+
+        assert!(
+            error.to_string().contains("snapshot_worker.refresh_url"),
+            "unexpected validation error: {error:#}"
         );
     }
 

@@ -64,6 +64,8 @@ materialized_snapshot_reconcile_interval_seconds = 30
 # snapshot worker. Use the same values in the web and worker config.
 snapshot_refresh_shared_secret = ""
 snapshot_refresh_client_id = "listings-snapshot-worker"
+snapshot_refresh_clock_skew_seconds = 300
+snapshot_refresh_nonce_ttl_seconds = 300
 
 [mongo]
 url = "YOUR_MONGODB_CONNECTION_STRING"

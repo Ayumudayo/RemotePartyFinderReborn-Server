@@ -6,10 +6,11 @@ use remote_party_finder_reborn::config::Config;
 use remote_party_finder_reborn::listings_snapshot::{
     allocate_materialized_revision, build_listings_payload, load_current_materialized_doc,
     load_listing_source_state, serialize_snapshot, try_acquire_snapshot_worker_lease,
-    try_write_materialized_snapshot_cas,
+    try_renew_snapshot_worker_lease, try_write_materialized_snapshot_cas,
 };
 use remote_party_finder_reborn::web::State;
 use sha2::Sha256;
+use std::future::Future;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -18,6 +19,8 @@ use tokio::io::AsyncReadExt;
 use uuid::Uuid;
 
 const SNAPSHOT_REFRESH_PATH: &str = "/internal/listings/snapshot/refresh";
+const REFRESH_CLIENT_TIMEOUT: Duration = Duration::from_secs(30);
+const REFRESH_CLIENT_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SnapshotWorkerDecision {
@@ -83,7 +86,7 @@ async fn run() -> anyhow::Result<()> {
         Duration::from_secs(config.snapshot_worker.force_rebuild_interval_seconds.max(1));
     let lease_ttl_seconds = config.snapshot_worker.lease_ttl_seconds.max(1) as i64;
     let state = State::new(Arc::clone(&config)).await?;
-    let client = reqwest::Client::new();
+    let client = build_refresh_client()?;
     let mut last_source_revision = None;
     let mut last_forced_build_at = Instant::now();
 
@@ -164,51 +167,70 @@ async fn run_tick(
         return Ok(TickOutcome::SkippedLeaseHeld);
     }
 
-    let payload = build_listings_payload(Arc::clone(&state)).await?;
-    let snapshot_collection = state.listings_snapshot_collection();
-    let current_doc =
-        load_current_materialized_doc(&snapshot_collection, &state.listings_snapshot_document_id)
-            .await?;
-    if current_doc
-        .as_ref()
-        .is_some_and(|doc| doc.payload_hash == payload.payload_hash)
-    {
-        *last_source_revision = Some(current_source_revision);
-        if force_due {
-            *last_forced_build_at = Instant::now();
+    let (stop_renewal, renewal_handle) = spawn_lease_renewal_task(
+        Arc::clone(&state),
+        snapshot_worker_lease_document_id(&state.listings_snapshot_document_id).to_string(),
+        owner_id.to_string(),
+        lease_ttl_seconds,
+    );
+
+    run_tick_critical_section_with_lease_renewal(stop_renewal, renewal_handle, async {
+        let payload = build_listings_payload(Arc::clone(&state)).await?;
+        let snapshot_collection = state.listings_snapshot_collection();
+        let current_doc = load_current_materialized_doc(
+            &snapshot_collection,
+            &state.listings_snapshot_document_id,
+        )
+        .await?;
+        if current_doc
+            .as_ref()
+            .is_some_and(|doc| doc.payload_hash == payload.payload_hash)
+        {
+            *last_source_revision = Some(current_source_revision);
+            if force_due {
+                *last_forced_build_at = Instant::now();
+            }
+            return Ok(TickOutcome::BuiltUnchanged);
         }
-        return Ok(TickOutcome::BuiltUnchanged);
-    }
 
-    let revision_collection = state.listing_snapshot_revision_state_collection();
-    let revision =
-        allocate_materialized_revision(&revision_collection, &state.listings_snapshot_document_id)
-            .await?;
-    let built = serialize_snapshot(revision, payload)?;
-    let wrote = try_write_materialized_snapshot_cas(
-        &snapshot_collection,
-        &state.listings_snapshot_document_id,
-        built,
-        current_source_revision,
-    )
-    .await?;
+        let revision_collection = state.listing_snapshot_revision_state_collection();
+        let revision = allocate_materialized_revision(
+            &revision_collection,
+            &state.listings_snapshot_document_id,
+        )
+        .await?;
+        let expected_revision = revision
+            .try_into()
+            .context("materialized listings snapshot revision must be non-negative")?;
+        let built = serialize_snapshot(revision, payload)?;
+        let wrote = try_write_materialized_snapshot_cas(
+            &snapshot_collection,
+            &state.listings_snapshot_document_id,
+            built,
+            current_source_revision,
+        )
+        .await?;
 
-    *last_source_revision = Some(current_source_revision);
-    *last_forced_build_at = Instant::now();
+        *last_source_revision = Some(current_source_revision);
+        *last_forced_build_at = Instant::now();
 
-    if !wrote {
-        return Ok(TickOutcome::CasRejected);
-    }
+        if !wrote {
+            return Ok(TickOutcome::CasRejected);
+        }
 
-    send_refresh_request(
-        client,
-        refresh_url,
-        &state.snapshot_refresh_client_id,
-        &state.snapshot_refresh_shared_secret,
-    )
-    .await?;
+        send_refresh_request(
+            client,
+            refresh_url,
+            &state.snapshot_refresh_client_id,
+            &state.snapshot_refresh_shared_secret,
+            &state.listings_snapshot_document_id,
+            expected_revision,
+        )
+        .await?;
 
-    Ok(TickOutcome::WroteAndRefreshed)
+        Ok(TickOutcome::WroteAndRefreshed)
+    })
+    .await
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> anyhow::Result<WorkerArgs> {
@@ -267,6 +289,19 @@ fn init_tracing(log_filter: &str) {
         .try_init();
 }
 
+fn refresh_client_timeout_settings() -> (Duration, Duration) {
+    (REFRESH_CLIENT_TIMEOUT, REFRESH_CLIENT_CONNECT_TIMEOUT)
+}
+
+fn build_refresh_client() -> anyhow::Result<reqwest::Client> {
+    let (timeout, connect_timeout) = refresh_client_timeout_settings();
+    reqwest::Client::builder()
+        .timeout(timeout)
+        .connect_timeout(connect_timeout)
+        .build()
+        .context("failed to build snapshot refresh HTTP client")
+}
+
 fn effective_owner_id(configured: &str) -> String {
     let configured = configured.trim();
     if !configured.is_empty() {
@@ -283,21 +318,113 @@ fn snapshot_worker_lease_document_id(snapshot_document_id: &str) -> &str {
     snapshot_document_id
 }
 
+fn lease_renewal_interval(lease_ttl_seconds: i64) -> Duration {
+    let ttl_seconds = u64::try_from(lease_ttl_seconds.max(1)).unwrap_or(1);
+    Duration::from_millis(ttl_seconds.saturating_mul(1_000) / 3)
+}
+
+fn spawn_lease_renewal_task(
+    state: Arc<State>,
+    lease_document_id: String,
+    owner_id: String,
+    lease_ttl_seconds: i64,
+) -> (
+    tokio::sync::oneshot::Sender<()>,
+    tokio::task::JoinHandle<anyhow::Result<()>>,
+) {
+    let (stop_renewal, mut stop_requested) = tokio::sync::oneshot::channel();
+    let handle = tokio::spawn(async move {
+        let collection = state.listing_snapshot_worker_lease_collection();
+        let interval = lease_renewal_interval(lease_ttl_seconds);
+
+        loop {
+            tokio::select! {
+                _ = &mut stop_requested => return Ok(()),
+                _ = tokio::time::sleep(interval) => {
+                    let renewed = try_renew_snapshot_worker_lease(
+                        &collection,
+                        &lease_document_id,
+                        &owner_id,
+                        Utc::now(),
+                        lease_ttl_seconds,
+                    )
+                    .await?;
+
+                    if !renewed {
+                        bail!("lost listings snapshot worker lease before snapshot tick completed");
+                    }
+                }
+            }
+        }
+    });
+
+    (stop_renewal, handle)
+}
+
+async fn run_tick_critical_section_with_lease_renewal<T, Fut>(
+    stop_renewal: tokio::sync::oneshot::Sender<()>,
+    mut renewal_handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+    critical_section: Fut,
+) -> anyhow::Result<T>
+where
+    Fut: Future<Output = anyhow::Result<T>>,
+{
+    tokio::pin!(critical_section);
+
+    tokio::select! {
+        tick_result = &mut critical_section => {
+            let renewal_result = stop_lease_renewal_task(stop_renewal, renewal_handle).await;
+            match (tick_result, renewal_result) {
+                (Ok(outcome), Ok(())) => Ok(outcome),
+                (Err(error), _) => Err(error),
+                (Ok(_), Err(error)) => Err(error),
+            }
+        }
+        renewal_result = &mut renewal_handle => {
+            drop(stop_renewal);
+            match renewal_result.context("listings snapshot worker lease renewal task panicked")? {
+                Ok(()) => bail!("listings snapshot worker lease renewal stopped before snapshot tick completed"),
+                Err(error) => Err(error),
+            }
+        }
+    }
+}
+
+async fn stop_lease_renewal_task(
+    stop_renewal: tokio::sync::oneshot::Sender<()>,
+    renewal_handle: tokio::task::JoinHandle<anyhow::Result<()>>,
+) -> anyhow::Result<()> {
+    let _ = stop_renewal.send(());
+    renewal_handle
+        .await
+        .context("listings snapshot worker lease renewal task panicked")?
+}
+
 async fn send_refresh_request(
     client: &reqwest::Client,
     refresh_url: &str,
     client_id: &str,
     secret: &str,
+    snapshot_document_id: &str,
+    expected_revision: u64,
 ) -> anyhow::Result<()> {
     let timestamp = Utc::now().timestamp().to_string();
     let nonce = Uuid::new_v4().to_string();
-    let payload = refresh_signature_payload(&timestamp, &nonce, client_id);
+    let payload = refresh_signature_payload(
+        &timestamp,
+        &nonce,
+        client_id,
+        snapshot_document_id,
+        expected_revision,
+    );
     let signature = compute_refresh_signature(secret, &payload)
         .context("failed to sign snapshot refresh request")?;
 
     let response = client
         .post(refresh_url)
         .header("x-rpf-client-id", client_id)
+        .header("x-rpf-snapshot-document-id", snapshot_document_id)
+        .header("x-rpf-expected-revision", expected_revision)
         .header("x-rpf-timestamp", timestamp)
         .header("x-rpf-nonce", nonce)
         .header("x-rpf-signature-version", "v1")
@@ -315,16 +442,23 @@ async fn send_refresh_request(
     Ok(())
 }
 
-fn refresh_signature_payload(timestamp: &str, nonce: &str, client_id: &str) -> String {
+fn refresh_signature_payload(
+    timestamp: &str,
+    nonce: &str,
+    client_id: &str,
+    snapshot_document_id: &str,
+    expected_revision: u64,
+) -> String {
     format!(
-        "POST\n{}\n{}\n{}\n{}",
-        SNAPSHOT_REFRESH_PATH, timestamp, nonce, client_id
+        "POST\n{}\n{}\n{}\n{}\n{}\n{}",
+        SNAPSHOT_REFRESH_PATH, timestamp, nonce, client_id, snapshot_document_id, expected_revision
     )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     #[test]
     fn first_tick_builds_snapshot() {
@@ -364,13 +498,16 @@ mod tests {
 
     #[test]
     fn refresh_signature_uses_server_payload_contract() {
-        let signature = compute_refresh_signature(
-            "secret",
-            "POST\n/internal/listings/snapshot/refresh\n1700000000\nnonce-1\nworker-1",
-        )
-        .expect("signature should compute");
+        let payload = refresh_signature_payload("1700000000", "nonce-1", "worker-1", "current", 42);
+        assert_eq!(
+            payload,
+            "POST\n/internal/listings/snapshot/refresh\n1700000000\nnonce-1\nworker-1\ncurrent\n42"
+        );
 
-        assert_eq!(signature, "zfTilkxB69wIMMGr88k+/bw69LFoyVfD4W07ZS1c/gQ=");
+        let signature =
+            compute_refresh_signature("secret", &payload).expect("signature should compute");
+
+        assert_eq!(signature, "u2G9q1s1WsLyP9wTEmIByvcciQTLEOvLtcn7pm8GNO0=");
     }
 
     #[test]
@@ -403,6 +540,53 @@ mod tests {
         assert_eq!(
             snapshot_worker_lease_document_id("custom-current"),
             "custom-current"
+        );
+    }
+
+    #[test]
+    fn lease_renewal_interval_is_conservative_relative_to_ttl() {
+        assert_eq!(lease_renewal_interval(120), Duration::from_secs(40));
+        assert_eq!(lease_renewal_interval(3), Duration::from_secs(1));
+        assert_eq!(lease_renewal_interval(1), Duration::from_millis(333));
+        assert_eq!(lease_renewal_interval(0), Duration::from_millis(333));
+    }
+
+    #[test]
+    fn refresh_client_uses_bounded_timeouts() {
+        let (request_timeout, connect_timeout) = refresh_client_timeout_settings();
+
+        assert_eq!(request_timeout, Duration::from_secs(30));
+        assert_eq!(connect_timeout, Duration::from_secs(5));
+        build_refresh_client().expect("bounded refresh client should build");
+    }
+
+    #[tokio::test]
+    async fn lease_renewal_failure_aborts_tick_before_side_effects() {
+        let (stop_renewal, _stop_requested) = tokio::sync::oneshot::channel();
+        let renewal_handle = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            Err(anyhow::anyhow!("lost lease"))
+        });
+        let side_effect_ran = Arc::new(AtomicBool::new(false));
+
+        let result = run_tick_critical_section_with_lease_renewal(stop_renewal, renewal_handle, {
+            let side_effect_ran = Arc::clone(&side_effect_ran);
+            async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                side_effect_ran.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        })
+        .await;
+
+        let error = result.expect_err("lease renewal failure must abort the tick");
+        assert!(
+            error.to_string().contains("lost lease"),
+            "unexpected error: {error:#}"
+        );
+        assert!(
+            !side_effect_ran.load(Ordering::SeqCst),
+            "critical section must be cancelled before later side effects run"
         );
     }
 }

@@ -69,6 +69,8 @@ pub struct State {
     pub materialized_snapshot_reconcile_interval_seconds: u64,
     pub snapshot_refresh_shared_secret: String,
     pub snapshot_refresh_client_id: String,
+    pub snapshot_refresh_clock_skew_seconds: i64,
+    pub snapshot_refresh_nonce_ttl_seconds: i64,
     pub fflogs_jobs_limit: usize,
     pub fflogs_hidden_cache_ttl_hours: i64,
     pub listing_upsert_concurrency: usize,
@@ -85,6 +87,7 @@ pub struct State {
     pub ingest_security: IngestSecurityConfig,
     pub ingest_rate_windows: RwLock<HashMap<IngestRateKey, IngestRateWindow>>,
     pub ingest_nonces: RwLock<HashMap<String, DateTime<Utc>>>,
+    pub snapshot_refresh_nonces: RwLock<HashMap<String, DateTime<Utc>>>,
     /// in-flight FFLogs job lease map to avoid duplicate dispatch across workers
     pub fflogs_job_leases: RwLock<HashMap<FflogsLeaseKey, FflogsLeaseEntry>>,
     /// total number of FFLogs jobs dispatched to workers
@@ -287,6 +290,14 @@ impl State {
                 .trim()
                 .to_string(),
             snapshot_refresh_client_id: config.web.snapshot_refresh_client_id.clone(),
+            snapshot_refresh_clock_skew_seconds: config
+                .web
+                .snapshot_refresh_clock_skew_seconds
+                .max(1),
+            snapshot_refresh_nonce_ttl_seconds: config
+                .web
+                .snapshot_refresh_nonce_ttl_seconds
+                .max(1),
             fflogs_jobs_limit: config.web.fflogs_jobs_limit.max(1),
             fflogs_hidden_cache_ttl_hours: config.web.fflogs_hidden_cache_ttl_hours.max(1),
             listing_upsert_concurrency: config.web.listing_upsert_concurrency.max(1),
@@ -350,6 +361,7 @@ impl State {
             },
             ingest_rate_windows: Default::default(),
             ingest_nonces: Default::default(),
+            snapshot_refresh_nonces: Default::default(),
             fflogs_job_leases: Default::default(),
             fflogs_jobs_dispatched_total: Default::default(),
             fflogs_results_received_total: Default::default(),

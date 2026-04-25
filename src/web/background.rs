@@ -165,6 +165,7 @@ where
                     state
                         .listings_revision_pending
                         .store(true, AtomicOrdering::Relaxed);
+                    state.listings_revision_notify.notify_one();
                     return Err(error);
                 }
             };
@@ -315,6 +316,8 @@ mod tests {
             materialized_snapshot_reconcile_interval_seconds: 30,
             snapshot_refresh_shared_secret: String::new(),
             snapshot_refresh_client_id: "listings-snapshot-worker".to_string(),
+            snapshot_refresh_clock_skew_seconds: 300,
+            snapshot_refresh_nonce_ttl_seconds: 300,
             fflogs_jobs_limit: 1,
             fflogs_hidden_cache_ttl_hours: 24,
             listing_upsert_concurrency: 1,
@@ -348,6 +351,7 @@ mod tests {
             },
             ingest_rate_windows: RwLock::new(HashMap::new()),
             ingest_nonces: RwLock::new(HashMap::new()),
+            snapshot_refresh_nonces: RwLock::new(HashMap::new()),
             fflogs_job_leases: RwLock::new(HashMap::new()),
             fflogs_jobs_dispatched_total: Default::default(),
             fflogs_results_received_total: Default::default(),
@@ -456,5 +460,30 @@ mod tests {
 
         assert!(error.to_string().contains("mongo unavailable"));
         assert!(state.listings_revision_pending.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn materialized_revision_publisher_renotifies_when_source_increment_fails() {
+        let state = test_state_with_source(
+            Duration::from_millis(1),
+            ListingsSnapshotSource::Materialized,
+        )
+        .await;
+
+        state
+            .listings_revision_pending
+            .store(true, Ordering::SeqCst);
+        publish_coalesced_listings_change_with_incrementer(&state, |_state| async {
+            Err(anyhow::anyhow!("transient mongo failure"))
+        })
+        .await
+        .expect_err("first source revision increment should fail");
+
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            state.listings_revision_notify.notified(),
+        )
+        .await
+        .expect("failed materialized source revision publish should schedule a retry");
     }
 }

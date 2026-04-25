@@ -310,6 +310,28 @@ pub fn snapshot_worker_lease_acquire_update(
     (filter, update, options)
 }
 
+pub fn snapshot_worker_lease_renew_update(
+    document_id: &str,
+    owner_id: &str,
+    now: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+) -> (Document, Document, UpdateOptions) {
+    let filter = doc! {
+        "_id": document_id,
+        "owner_id": owner_id,
+        "expires_at": { "$gt": mongodb::bson::DateTime::from_chrono(now) },
+    };
+    let update = doc! {
+        "$set": {
+            "expires_at": mongodb::bson::DateTime::from_chrono(expires_at),
+            "updated_at": mongodb::bson::DateTime::from_chrono(now),
+        },
+    };
+    let options = UpdateOptions::builder().upsert(false).build();
+
+    (filter, update, options)
+}
+
 pub fn snapshot_worker_lease_can_acquire(
     current: Option<&ListingSnapshotWorkerLeaseDoc>,
     owner_id: &str,
@@ -341,6 +363,24 @@ pub async fn try_acquire_snapshot_worker_lease(
         Err(error) if is_duplicate_key_error(&error) => Ok(false),
         Err(error) => Err(error).context("failed to acquire listings snapshot worker lease"),
     }
+}
+
+pub async fn try_renew_snapshot_worker_lease(
+    collection: &Collection<ListingSnapshotWorkerLeaseDoc>,
+    id: &str,
+    owner_id: &str,
+    now: DateTime<Utc>,
+    lease_ttl_seconds: i64,
+) -> anyhow::Result<bool> {
+    let expires_at = now + chrono::TimeDelta::seconds(lease_ttl_seconds.max(1));
+    let (filter, update, options) =
+        snapshot_worker_lease_renew_update(id, owner_id, now, expires_at);
+
+    collection
+        .update_one(filter, update, options)
+        .await
+        .map(|result| result.matched_count == 1)
+        .context("failed to renew listings snapshot worker lease")
 }
 
 pub fn materialized_snapshot_cas_filter(
@@ -880,6 +920,34 @@ mod tests {
             }
         );
         assert_eq!(options.upsert, Some(true));
+    }
+
+    #[test]
+    fn worker_lease_renew_filter_requires_same_owner_and_active_lease() {
+        let now = Utc::now();
+        let expires_at = now + chrono::TimeDelta::seconds(120);
+
+        let (filter, update, options) =
+            snapshot_worker_lease_renew_update("current", "owner-a", now, expires_at);
+
+        assert_eq!(
+            filter,
+            mongodb::bson::doc! {
+                "_id": "current",
+                "owner_id": "owner-a",
+                "expires_at": { "$gt": mongodb::bson::DateTime::from_chrono(now) },
+            }
+        );
+        assert_eq!(
+            update,
+            mongodb::bson::doc! {
+                "$set": {
+                    "expires_at": mongodb::bson::DateTime::from_chrono(expires_at),
+                    "updated_at": mongodb::bson::DateTime::from_chrono(now),
+                },
+            }
+        );
+        assert_eq!(options.upsert, Some(false));
     }
 
     #[test]
