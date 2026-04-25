@@ -104,57 +104,49 @@ For low-resource hosting, run the web server in materialized snapshot mode and r
 `listings_snapshot_worker` on a separate machine. The worker writes the compressed
 snapshot into MongoDB and sends a signed refresh request to the web server.
 
-Koyeb-style container deployments can override `config.toml` with environment
-variables instead of baking secrets into the image:
+Use `config.toml` as the single source of truth for both the Koyeb web server
+and the Pi-side worker. Avoid mixing deployment environment overrides with file
+configuration, because split configuration makes the effective runtime state
+harder to audit.
 
-```text
-RPF_LISTINGS_SNAPSHOT_SOURCE=materialized
-RPF_SNAPSHOT_REFRESH_SHARED_SECRET=<same-long-random-secret-as-worker>
-RPF_SNAPSHOT_REFRESH_CLIENT_ID=listings-snapshot-worker
-RPF_MATERIALIZED_SNAPSHOT_RECONCILE_INTERVAL_SECONDS=5
+Web server config:
+
+```toml
+[web]
+host = "0.0.0.0:8000"
+listings_snapshot_source = "materialized"
+listings_snapshot_document_id = "current"
+listing_source_state_document_id = "current"
+materialized_snapshot_reconcile_interval_seconds = 5
+snapshot_refresh_shared_secret = "<same-long-random-secret-as-worker>"
+snapshot_refresh_client_id = "listings-snapshot-worker"
+
+[mongo]
+url = "<mongodb-connection-string>"
 ```
 
-Use `MONGODB_URI`, `MONGO_URL`, or `RPF_MONGO_URL` when the MongoDB URL should be
-injected from the host environment. The Pi-side worker must use the same MongoDB
-URL, `snapshot_refresh_shared_secret`, `snapshot_refresh_client_id`, and
-`listings_snapshot_document_id`, with `snapshot_worker.refresh_url` pointing at:
+Pi-side worker config must use the same MongoDB URL, refresh secret, refresh
+client ID, and snapshot document ID. Its refresh URL must point at the web
+server's internal refresh endpoint:
 
-```text
-https://<web-host>/internal/listings/snapshot/refresh
+```toml
+[web]
+listings_snapshot_source = "materialized"
+listings_snapshot_document_id = "current"
+snapshot_refresh_shared_secret = "<same-long-random-secret-as-web-server>"
+snapshot_refresh_client_id = "listings-snapshot-worker"
+
+[mongo]
+url = "<same-mongodb-connection-string-as-web-server>"
+
+[snapshot_worker]
+enabled = true
+refresh_url = "https://<web-host>/internal/listings/snapshot/refresh"
+tick_seconds = 5
+force_rebuild_interval_seconds = 300
+lease_ttl_seconds = 120
+owner_id = "rpi-listings-snapshot-worker"
 ```
-
-Supported environment overrides:
-
-| Variable | Applies to | Type | Overrides |
-| --- | --- | --- | --- |
-| `PORT` | Server | TCP port | `web.host` as `0.0.0.0:<PORT>` |
-| `RPF_WEB_HOST` | Server | Socket address | `web.host`; takes precedence over `PORT` |
-| `MONGODB_URI` | Server, worker | String | `mongo.url` |
-| `MONGO_URL` | Server, worker | String | `mongo.url` |
-| `RPF_MONGO_URL` | Server, worker | String | `mongo.url` |
-| `RPF_LISTINGS_SNAPSHOT_SOURCE` | Server, worker | `inline` or `materialized` | `web.listings_snapshot_source` |
-| `RPF_LISTINGS_SNAPSHOT_COLLECTION` | Server, worker | String | `web.listings_snapshot_collection` |
-| `RPF_LISTINGS_SNAPSHOT_DOCUMENT_ID` | Server, worker | String | `web.listings_snapshot_document_id` |
-| `RPF_LISTING_SOURCE_STATE_COLLECTION` | Server, worker | String | `web.listing_source_state_collection` |
-| `RPF_LISTING_SOURCE_STATE_DOCUMENT_ID` | Server, worker | String | `web.listing_source_state_document_id` |
-| `RPF_LISTING_SNAPSHOT_REVISION_STATE_COLLECTION` | Server, worker | String | `web.listing_snapshot_revision_state_collection` |
-| `RPF_LISTING_SNAPSHOT_WORKER_LEASE_COLLECTION` | Worker | String | `web.listing_snapshot_worker_lease_collection` |
-| `RPF_MATERIALIZED_SNAPSHOT_RECONCILE_INTERVAL_SECONDS` | Server | Unsigned integer | `web.materialized_snapshot_reconcile_interval_seconds` |
-| `RPF_SNAPSHOT_REFRESH_SHARED_SECRET` | Server, worker | String | `web.snapshot_refresh_shared_secret` |
-| `RPF_SNAPSHOT_REFRESH_CLIENT_ID` | Server, worker | String | `web.snapshot_refresh_client_id` |
-| `RPF_SNAPSHOT_REFRESH_CLOCK_SKEW_SECONDS` | Server, worker | Unsigned integer | `web.snapshot_refresh_clock_skew_seconds` |
-| `RPF_SNAPSHOT_REFRESH_NONCE_TTL_SECONDS` | Server | Unsigned integer | `web.snapshot_refresh_nonce_ttl_seconds` |
-| `RPF_SNAPSHOT_WORKER_ENABLED` | Worker | Boolean | `snapshot_worker.enabled` |
-| `RPF_SNAPSHOT_WORKER_TICK_SECONDS` | Worker | Unsigned integer | `snapshot_worker.tick_seconds` |
-| `RPF_SNAPSHOT_WORKER_FORCE_REBUILD_INTERVAL_SECONDS` | Worker | Unsigned integer | `snapshot_worker.force_rebuild_interval_seconds` |
-| `RPF_SNAPSHOT_WORKER_LEASE_TTL_SECONDS` | Worker | Unsigned integer | `snapshot_worker.lease_ttl_seconds` |
-| `RPF_SNAPSHOT_WORKER_OWNER_ID` | Worker | String | `snapshot_worker.owner_id` |
-| `RPF_SNAPSHOT_WORKER_REFRESH_URL` | Worker | URL | `snapshot_worker.refresh_url` |
-| `RPF_SNAPSHOT_WORKER_LOG_FILTER` | Worker | Tracing filter | `snapshot_worker.log_filter` |
-
-Boolean values accept `1`, `true`, `yes`, `on`, `0`, `false`, `no`, and `off`.
-Only the variables listed above are currently supported as environment
-overrides; other tuning values must still be set in `config.toml`.
 
 ### Recommended Presets
 

@@ -283,12 +283,7 @@ async fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
     file.read_to_string(&mut toml)
         .await
         .context("could not read config file")?;
-    let mut config: Config = toml::from_str(&toml).context("could not parse config file")?;
-    config
-        .apply_env_overrides_from_env()
-        .context("could not apply environment config overrides")?;
-
-    Ok(config)
+    toml::from_str(&toml).context("could not parse config file")
 }
 
 fn init_tracing(log_filter: &str) {
@@ -473,6 +468,49 @@ fn refresh_signature_payload(
 mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::const_new(());
+
+    struct EnvGuard {
+        saved: Vec<(&'static str, Option<String>)>,
+    }
+
+    impl EnvGuard {
+        fn set(vars: &[(&'static str, &'static str)]) -> Self {
+            let saved = vars
+                .iter()
+                .map(|(name, _)| (*name, std::env::var(name).ok()))
+                .collect();
+            for (name, value) in vars {
+                std::env::set_var(name, value);
+            }
+            Self { saved }
+        }
+    }
+
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            for (name, value) in self.saved.drain(..) {
+                if let Some(value) = value {
+                    std::env::set_var(name, value);
+                } else {
+                    std::env::remove_var(name);
+                }
+            }
+        }
+    }
+
+    fn write_temp_config(contents: &str) -> std::path::PathBuf {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system time should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!("rpf-snapshot-worker-config-{nanos}.toml"));
+        std::fs::write(&path, contents).expect("temp config should be writable");
+        path
+    }
 
     #[test]
     fn first_tick_builds_snapshot() {
@@ -563,6 +601,58 @@ mod tests {
         assert_eq!(lease_renewal_interval(3), Duration::from_secs(1));
         assert_eq!(lease_renewal_interval(1), Duration::from_millis(333));
         assert_eq!(lease_renewal_interval(0), Duration::from_millis(333));
+    }
+
+    #[tokio::test]
+    async fn load_config_uses_config_file_as_single_source() {
+        let _lock = ENV_LOCK.lock().await;
+        let _env = EnvGuard::set(&[
+            ("RPF_MONGO_URL", "mongodb://env-worker"),
+            ("RPF_SNAPSHOT_REFRESH_SHARED_SECRET", "env-secret"),
+            ("RPF_SNAPSHOT_REFRESH_CLIENT_ID", "env-client"),
+            ("RPF_SNAPSHOT_WORKER_TICK_SECONDS", "99"),
+            (
+                "RPF_SNAPSHOT_WORKER_REFRESH_URL",
+                "https://env.example/internal/listings/snapshot/refresh",
+            ),
+        ]);
+        let path = write_temp_config(
+            r#"
+[web]
+host = "127.0.0.1:8124"
+listings_snapshot_source = "materialized"
+snapshot_refresh_shared_secret = "file-secret"
+snapshot_refresh_client_id = "file-client"
+listings_snapshot_document_id = "file-doc"
+
+[mongo]
+url = "mongodb://file-worker"
+
+[snapshot_worker]
+enabled = true
+tick_seconds = 5
+force_rebuild_interval_seconds = 300
+lease_ttl_seconds = 120
+owner_id = "file-owner"
+refresh_url = "https://file.example/internal/listings/snapshot/refresh"
+log_filter = "warn"
+"#,
+        );
+
+        let config = load_config(&path).await.expect("file config should load");
+        let _ = std::fs::remove_file(path);
+
+        assert_eq!(config.mongo.url, "mongodb://file-worker");
+        assert_eq!(config.web.snapshot_refresh_shared_secret, "file-secret");
+        assert_eq!(config.web.snapshot_refresh_client_id, "file-client");
+        assert_eq!(config.web.listings_snapshot_document_id, "file-doc");
+        assert_eq!(config.snapshot_worker.tick_seconds, 5);
+        assert_eq!(config.snapshot_worker.owner_id, "file-owner");
+        assert_eq!(
+            config.snapshot_worker.refresh_url,
+            "https://file.example/internal/listings/snapshot/refresh"
+        );
+        assert_eq!(config.snapshot_worker.log_filter, "warn");
     }
 
     #[test]

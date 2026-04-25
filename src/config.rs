@@ -1,6 +1,5 @@
 use anyhow::{bail, Result};
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::net::SocketAddr;
 
 const SNAPSHOT_REFRESH_PATH: &str = "/internal/listings/snapshot/refresh";
@@ -32,37 +31,6 @@ fn validate_snapshot_refresh_url_transport(url: &reqwest::Url) -> Result<()> {
         _ => bail!(
             "snapshot_worker.refresh_url must use https except for local testing URLs on localhost, 127.0.0.1, or [::1]"
         ),
-    }
-}
-
-fn env_value<'a>(
-    values: &'a HashMap<String, String>,
-    names: &[&'static str],
-) -> Option<(&'static str, &'a str)> {
-    names
-        .iter()
-        .find_map(|name| values.get(*name).map(|value| (*name, value.as_str())))
-}
-
-fn parse_env_u64(name: &str, value: &str) -> Result<u64> {
-    value
-        .parse::<u64>()
-        .map_err(|error| anyhow::anyhow!("{name} must be an unsigned integer: {error}"))
-}
-
-fn parse_env_bool(name: &str, value: &str) -> Result<bool> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "true" | "yes" | "on" => Ok(true),
-        "0" | "false" | "no" | "off" => Ok(false),
-        _ => bail!("{name} must be a boolean value"),
-    }
-}
-
-fn parse_env_snapshot_source(name: &str, value: &str) -> Result<ListingsSnapshotSource> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "inline" => Ok(ListingsSnapshotSource::Inline),
-        "materialized" => Ok(ListingsSnapshotSource::Materialized),
-        _ => bail!("{name} must be either 'inline' or 'materialized'"),
     }
 }
 
@@ -274,120 +242,6 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn apply_env_overrides_from_env(&mut self) -> Result<()> {
-        self.apply_env_overrides(std::env::vars())
-    }
-
-    pub fn apply_env_overrides<I, K, V>(&mut self, vars: I) -> Result<()>
-    where
-        I: IntoIterator<Item = (K, V)>,
-        K: Into<String>,
-        V: Into<String>,
-    {
-        let values = vars
-            .into_iter()
-            .map(|(key, value)| (key.into(), value.into()))
-            .collect::<HashMap<_, _>>();
-
-        if let Some((name, value)) = env_value(&values, &["RPF_WEB_HOST"]) {
-            self.web.host = value
-                .parse::<SocketAddr>()
-                .map_err(|error| anyhow::anyhow!("{name} must be a socket address: {error}"))?;
-        } else if let Some((name, value)) = env_value(&values, &["PORT"]) {
-            let port = value
-                .parse::<u16>()
-                .map_err(|error| anyhow::anyhow!("{name} must be a TCP port: {error}"))?;
-            self.web.host = format!("0.0.0.0:{port}")
-                .parse::<SocketAddr>()
-                .expect("generated socket address should parse");
-        }
-
-        if let Some((_, value)) = env_value(&values, &["RPF_MONGO_URL", "MONGO_URL", "MONGODB_URI"])
-        {
-            self.mongo.url = value.to_string();
-        }
-
-        if let Some((name, value)) = env_value(&values, &["RPF_LISTINGS_SNAPSHOT_SOURCE"]) {
-            self.web.listings_snapshot_source = parse_env_snapshot_source(name, value)?;
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_LISTINGS_SNAPSHOT_COLLECTION"]) {
-            self.web.listings_snapshot_collection = value.to_string();
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_LISTINGS_SNAPSHOT_DOCUMENT_ID"]) {
-            self.web.listings_snapshot_document_id = value.to_string();
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_LISTING_SOURCE_STATE_COLLECTION"]) {
-            self.web.listing_source_state_collection = value.to_string();
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_LISTING_SOURCE_STATE_DOCUMENT_ID"]) {
-            self.web.listing_source_state_document_id = value.to_string();
-        }
-        if let Some((_, value)) =
-            env_value(&values, &["RPF_LISTING_SNAPSHOT_REVISION_STATE_COLLECTION"])
-        {
-            self.web.listing_snapshot_revision_state_collection = value.to_string();
-        }
-        if let Some((_, value)) =
-            env_value(&values, &["RPF_LISTING_SNAPSHOT_WORKER_LEASE_COLLECTION"])
-        {
-            self.web.listing_snapshot_worker_lease_collection = value.to_string();
-        }
-        if let Some((name, value)) = env_value(
-            &values,
-            &["RPF_MATERIALIZED_SNAPSHOT_RECONCILE_INTERVAL_SECONDS"],
-        ) {
-            self.web.materialized_snapshot_reconcile_interval_seconds = parse_env_u64(name, value)?;
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_SNAPSHOT_REFRESH_SHARED_SECRET"]) {
-            self.web.snapshot_refresh_shared_secret = value.to_string();
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_SNAPSHOT_REFRESH_CLIENT_ID"]) {
-            self.web.snapshot_refresh_client_id = value.to_string();
-        }
-        if let Some((name, value)) =
-            env_value(&values, &["RPF_SNAPSHOT_REFRESH_CLOCK_SKEW_SECONDS"])
-        {
-            self.web.snapshot_refresh_clock_skew_seconds =
-                parse_env_u64(name, value)?
-                    .try_into()
-                    .map_err(|_| anyhow::anyhow!("{name} exceeds i64 range"))?;
-        }
-        if let Some((name, value)) = env_value(&values, &["RPF_SNAPSHOT_REFRESH_NONCE_TTL_SECONDS"])
-        {
-            self.web.snapshot_refresh_nonce_ttl_seconds = parse_env_u64(name, value)?
-                .try_into()
-                .map_err(|_| anyhow::anyhow!("{name} exceeds i64 range"))?;
-        }
-
-        if let Some((name, value)) = env_value(&values, &["RPF_SNAPSHOT_WORKER_ENABLED"]) {
-            self.snapshot_worker.enabled = parse_env_bool(name, value)?;
-        }
-        if let Some((name, value)) = env_value(&values, &["RPF_SNAPSHOT_WORKER_TICK_SECONDS"]) {
-            self.snapshot_worker.tick_seconds = parse_env_u64(name, value)?;
-        }
-        if let Some((name, value)) = env_value(
-            &values,
-            &["RPF_SNAPSHOT_WORKER_FORCE_REBUILD_INTERVAL_SECONDS"],
-        ) {
-            self.snapshot_worker.force_rebuild_interval_seconds = parse_env_u64(name, value)?;
-        }
-        if let Some((name, value)) = env_value(&values, &["RPF_SNAPSHOT_WORKER_LEASE_TTL_SECONDS"])
-        {
-            self.snapshot_worker.lease_ttl_seconds = parse_env_u64(name, value)?;
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_SNAPSHOT_WORKER_OWNER_ID"]) {
-            self.snapshot_worker.owner_id = value.to_string();
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_SNAPSHOT_WORKER_REFRESH_URL"]) {
-            self.snapshot_worker.refresh_url = value.to_string();
-        }
-        if let Some((_, value)) = env_value(&values, &["RPF_SNAPSHOT_WORKER_LOG_FILTER"]) {
-            self.snapshot_worker.log_filter = value.to_string();
-        }
-
-        Ok(())
-    }
-
     pub fn validate(&self) -> Result<()> {
         self.validate_for_server()
     }
@@ -663,95 +517,6 @@ snapshot_refresh_shared_secret = "   "
         assert!(
             error.to_string().contains("snapshot_refresh_shared_secret"),
             "unexpected validation error: {error:#}"
-        );
-    }
-
-    #[test]
-    fn env_overrides_enable_materialized_snapshot_server_config() {
-        let mut config: Config =
-            toml::from_str(&minimal_config_toml("")).expect("config should parse");
-
-        config
-            .apply_env_overrides([
-                ("PORT", "9000"),
-                ("MONGODB_URI", "mongodb://env-mongo"),
-                ("RPF_LISTINGS_SNAPSHOT_SOURCE", "materialized"),
-                ("RPF_SNAPSHOT_REFRESH_SHARED_SECRET", "env-refresh-secret"),
-                ("RPF_SNAPSHOT_REFRESH_CLIENT_ID", "env-worker"),
-                ("RPF_MATERIALIZED_SNAPSHOT_RECONCILE_INTERVAL_SECONDS", "5"),
-            ])
-            .expect("env overrides should apply");
-
-        assert_eq!(config.web.host.to_string(), "0.0.0.0:9000");
-        assert_eq!(config.mongo.url, "mongodb://env-mongo");
-        assert_eq!(
-            config.web.listings_snapshot_source,
-            ListingsSnapshotSource::Materialized
-        );
-        assert_eq!(
-            config.web.snapshot_refresh_shared_secret,
-            "env-refresh-secret"
-        );
-        assert_eq!(config.web.snapshot_refresh_client_id, "env-worker");
-        assert_eq!(
-            config.web.materialized_snapshot_reconcile_interval_seconds,
-            5
-        );
-        config
-            .validate_for_server()
-            .expect("materialized env override should be valid");
-    }
-
-    #[test]
-    fn env_overrides_configure_snapshot_worker() {
-        let mut config: Config = toml::from_str(&minimal_config_toml(
-            r#"
-listings_snapshot_source = "materialized"
-snapshot_refresh_shared_secret = "worker-refresh-secret"
-"#,
-        ))
-        .expect("config should parse");
-
-        config
-            .apply_env_overrides([
-                ("RPF_SNAPSHOT_WORKER_ENABLED", "true"),
-                ("RPF_SNAPSHOT_WORKER_TICK_SECONDS", "7"),
-                ("RPF_SNAPSHOT_WORKER_FORCE_REBUILD_INTERVAL_SECONDS", "301"),
-                ("RPF_SNAPSHOT_WORKER_LEASE_TTL_SECONDS", "123"),
-                ("RPF_SNAPSHOT_WORKER_OWNER_ID", "rpi-worker"),
-                (
-                    "RPF_SNAPSHOT_WORKER_REFRESH_URL",
-                    "https://example.test/internal/listings/snapshot/refresh",
-                ),
-            ])
-            .expect("worker env overrides should apply");
-
-        assert!(config.snapshot_worker.enabled);
-        assert_eq!(config.snapshot_worker.tick_seconds, 7);
-        assert_eq!(config.snapshot_worker.force_rebuild_interval_seconds, 301);
-        assert_eq!(config.snapshot_worker.lease_ttl_seconds, 123);
-        assert_eq!(config.snapshot_worker.owner_id, "rpi-worker");
-        assert_eq!(
-            config.snapshot_worker.refresh_url,
-            "https://example.test/internal/listings/snapshot/refresh"
-        );
-        config
-            .validate_for_snapshot_worker()
-            .expect("snapshot worker env override should be valid");
-    }
-
-    #[test]
-    fn env_overrides_reject_invalid_snapshot_source() {
-        let mut config: Config =
-            toml::from_str(&minimal_config_toml("")).expect("config should parse");
-
-        let error = config
-            .apply_env_overrides([("RPF_LISTINGS_SNAPSHOT_SOURCE", "sometimes")])
-            .expect_err("invalid snapshot source env should fail");
-
-        assert!(
-            error.to_string().contains("RPF_LISTINGS_SNAPSHOT_SOURCE"),
-            "unexpected error: {error:#}"
         );
     }
 
