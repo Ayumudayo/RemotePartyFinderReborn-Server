@@ -15,8 +15,12 @@ use tokio::sync::{Notify, RwLock};
 use uuid::Uuid;
 use warp::hyper::body::Bytes;
 
-use crate::config::Config;
+use crate::config::{Config, ListingsSnapshotSource};
 use crate::listing_container::ListingContainer;
+use crate::listings_snapshot::{
+    ListingSnapshotRevisionStateDoc, ListingSnapshotWorkerLeaseDoc, ListingSourceStateDoc,
+    MaterializedListingsSnapshotDoc,
+};
 use crate::player::Player;
 use crate::stats::CachedStatistics;
 
@@ -37,6 +41,7 @@ pub async fn start(config: Arc<Config>) -> Result<()> {
     background::spawn_fflogs_lease_sweeper_task(Arc::clone(&state));
     background::spawn_listings_revision_publisher_task(Arc::clone(&state));
     background::spawn_monitor_snapshot_task(Arc::clone(&state));
+    background::spawn_materialized_snapshot_reconcile_task(Arc::clone(&state));
 
     tracing::info!("listening at {}", config.web.host);
     warp::serve(routes::router(state))
@@ -54,6 +59,18 @@ pub struct State {
     pub listings_revision_notify: Notify,
     pub listings_revision_coalesce_window: Duration,
     pub listings_snapshot_cache: RwLock<ListingsSnapshotCacheState>,
+    pub listings_snapshot_source: ListingsSnapshotSource,
+    pub listings_snapshot_collection_name: String,
+    pub listings_snapshot_document_id: String,
+    pub listing_source_state_collection_name: String,
+    pub listing_source_state_document_id: String,
+    pub listing_snapshot_revision_state_collection_name: String,
+    pub listing_snapshot_worker_lease_collection_name: String,
+    pub materialized_snapshot_reconcile_interval_seconds: u64,
+    pub snapshot_refresh_shared_secret: String,
+    pub snapshot_refresh_client_id: String,
+    pub snapshot_refresh_clock_skew_seconds: i64,
+    pub snapshot_refresh_nonce_ttl_seconds: i64,
     pub fflogs_jobs_limit: usize,
     pub fflogs_hidden_cache_ttl_hours: i64,
     pub listing_upsert_concurrency: usize,
@@ -70,6 +87,7 @@ pub struct State {
     pub ingest_security: IngestSecurityConfig,
     pub ingest_rate_windows: RwLock<HashMap<IngestRateKey, IngestRateWindow>>,
     pub ingest_nonces: RwLock<HashMap<String, DateTime<Utc>>>,
+    pub snapshot_refresh_nonces: RwLock<HashMap<String, DateTime<Utc>>>,
     /// in-flight FFLogs job lease map to avoid duplicate dispatch across workers
     pub fflogs_job_leases: RwLock<HashMap<FflogsLeaseKey, FflogsLeaseEntry>>,
     /// total number of FFLogs jobs dispatched to workers
@@ -144,6 +162,8 @@ pub struct IngestRateWindow {
 pub struct CachedListingsSnapshot {
     pub revision: u64,
     pub body: Bytes,
+    pub etag: Option<String>,
+    pub content_encoding: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -154,6 +174,18 @@ pub enum ListingsSnapshotCacheState {
         notify: Arc<Notify>,
     },
     Ready(CachedListingsSnapshot),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateInitMode {
+    WebServer,
+    SnapshotWorker,
+}
+
+impl StateInitMode {
+    pub fn maintain_indexes(self) -> bool {
+        matches!(self, Self::WebServer)
+    }
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -227,6 +259,16 @@ fn duplicate_ids_to_remove(group: &PlayerDuplicateGroup) -> Vec<mongodb::bson::o
 
 impl State {
     pub async fn new(config: Arc<Config>) -> Result<Arc<Self>> {
+        Self::new_with_mode(config, StateInitMode::WebServer).await
+    }
+
+    pub async fn new_for_snapshot_worker(config: Arc<Config>) -> Result<Arc<Self>> {
+        Self::new_with_mode(config, StateInitMode::SnapshotWorker).await
+    }
+
+    async fn new_with_mode(config: Arc<Config>, mode: StateInitMode) -> Result<Arc<Self>> {
+        config.validate()?;
+
         let mongo = MongoClient::with_uri_str(&config.mongo.url)
             .await
             .context("could not create mongodb client")?;
@@ -243,6 +285,39 @@ impl State {
                 config.web.listings_revision_coalesce_millis.max(1),
             ),
             listings_snapshot_cache: Default::default(),
+            listings_snapshot_source: config.web.listings_snapshot_source,
+            listings_snapshot_collection_name: config.web.listings_snapshot_collection.clone(),
+            listings_snapshot_document_id: config.web.listings_snapshot_document_id.clone(),
+            listing_source_state_collection_name: config
+                .web
+                .listing_source_state_collection
+                .clone(),
+            listing_source_state_document_id: config.web.listing_source_state_document_id.clone(),
+            listing_snapshot_revision_state_collection_name: config
+                .web
+                .listing_snapshot_revision_state_collection
+                .clone(),
+            listing_snapshot_worker_lease_collection_name: config
+                .web
+                .listing_snapshot_worker_lease_collection
+                .clone(),
+            materialized_snapshot_reconcile_interval_seconds: config
+                .web
+                .materialized_snapshot_reconcile_interval_seconds,
+            snapshot_refresh_shared_secret: config
+                .web
+                .snapshot_refresh_shared_secret
+                .trim()
+                .to_string(),
+            snapshot_refresh_client_id: config.web.snapshot_refresh_client_id.clone(),
+            snapshot_refresh_clock_skew_seconds: config
+                .web
+                .snapshot_refresh_clock_skew_seconds
+                .max(1),
+            snapshot_refresh_nonce_ttl_seconds: config
+                .web
+                .snapshot_refresh_nonce_ttl_seconds
+                .max(1),
             fflogs_jobs_limit: config.web.fflogs_jobs_limit.max(1),
             fflogs_hidden_cache_ttl_hours: config.web.fflogs_hidden_cache_ttl_hours.max(1),
             listing_upsert_concurrency: config.web.listing_upsert_concurrency.max(1),
@@ -306,6 +381,7 @@ impl State {
             },
             ingest_rate_windows: Default::default(),
             ingest_nonces: Default::default(),
+            snapshot_refresh_nonces: Default::default(),
             fflogs_job_leases: Default::default(),
             fflogs_jobs_dispatched_total: Default::default(),
             fflogs_results_received_total: Default::default(),
@@ -317,8 +393,9 @@ impl State {
             monitor_snapshot_interval_seconds: config.web.monitor_snapshot_interval_seconds,
         });
 
-        // Initialize Indexes
-        state.ensure_indexes().await?;
+        if mode.maintain_indexes() {
+            state.ensure_indexes().await?;
+        }
 
         Ok(state)
     }
@@ -514,6 +591,34 @@ impl State {
             .collection("report_parse_summaries")
     }
 
+    pub fn listings_snapshot_collection(&self) -> Collection<MaterializedListingsSnapshotDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listings_snapshot_collection_name)
+    }
+
+    pub fn listing_source_state_collection(&self) -> Collection<ListingSourceStateDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listing_source_state_collection_name)
+    }
+
+    pub fn listing_snapshot_revision_state_collection(
+        &self,
+    ) -> Collection<ListingSnapshotRevisionStateDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listing_snapshot_revision_state_collection_name)
+    }
+
+    pub fn listing_snapshot_worker_lease_collection(
+        &self,
+    ) -> Collection<ListingSnapshotWorkerLeaseDoc> {
+        self.mongo
+            .database("rpf")
+            .collection(&self.listing_snapshot_worker_lease_collection_name)
+    }
+
     pub fn notify_listings_changed(&self, changed_count: usize) {
         if changed_count > 0 {
             self.listings_revision_pending
@@ -532,7 +637,7 @@ mod tests {
     use super::{
         duplicate_ids_to_remove, players_content_id_dedupe_pipeline,
         players_content_id_unique_index_model, report_parse_summary_identity_index_model,
-        PlayerDuplicateGroup,
+        PlayerDuplicateGroup, StateInitMode,
     };
     use mongodb::bson::{doc, oid::ObjectId};
 
@@ -595,5 +700,11 @@ mod tests {
 
         assert_eq!(group.count, 3);
         assert_eq!(to_remove, vec![loser_a, loser_b]);
+    }
+
+    #[test]
+    fn snapshot_worker_state_init_skips_web_index_maintenance() {
+        assert!(StateInitMode::WebServer.maintain_indexes());
+        assert!(!StateInitMode::SnapshotWorker.maintain_indexes());
     }
 }

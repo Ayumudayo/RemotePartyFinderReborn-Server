@@ -1,4 +1,5 @@
 use std::{
+    future::Future,
     sync::{atomic::Ordering as AtomicOrdering, Arc},
     time::Duration,
 };
@@ -6,6 +7,8 @@ use std::{
 use chrono::{TimeDelta, Utc};
 
 use super::State;
+use crate::config::ListingsSnapshotSource;
+use crate::listings_snapshot::increment_listing_source_revision;
 use crate::stats::CachedStatistics;
 
 pub fn spawn_report_parse_summary_index_task(state: Arc<State>) {
@@ -108,15 +111,17 @@ pub fn spawn_listings_revision_publisher_task(state: Arc<State>) {
 
                 tokio::select! {
                     _ = &mut sleep => {
-                        let had_pending = revision_state
-                            .listings_revision_pending
-                            .swap(false, AtomicOrdering::Relaxed);
-                        if had_pending {
-                            let revision = revision_state
-                                .listings_revision
-                                .fetch_add(1, AtomicOrdering::Relaxed)
-                                + 1;
-                            let _ = revision_state.listings_change_channel.send(revision);
+                        if let Err(error) =
+                            publish_coalesced_listings_change_with_incrementer(
+                                &revision_state,
+                                |state| async move { increment_listing_source_revision(&state).await },
+                            )
+                            .await
+                        {
+                            tracing::error!(
+                                error = ?error,
+                                "failed to publish coalesced listings revision change"
+                            );
                         }
                         break;
                     }
@@ -124,6 +129,80 @@ pub fn spawn_listings_revision_publisher_task(state: Arc<State>) {
                         continue;
                     }
                 }
+            }
+        }
+    });
+}
+
+async fn publish_coalesced_listings_change_with_incrementer<F, Fut>(
+    state: &Arc<State>,
+    increment_source_revision: F,
+) -> anyhow::Result<Option<u64>>
+where
+    F: FnOnce(Arc<State>) -> Fut,
+    Fut: Future<Output = anyhow::Result<i64>>,
+{
+    let had_pending = state
+        .listings_revision_pending
+        .swap(false, AtomicOrdering::Relaxed);
+    if !had_pending {
+        return Ok(None);
+    }
+
+    match state.listings_snapshot_source {
+        ListingsSnapshotSource::Inline => {
+            let revision = state
+                .listings_revision
+                .fetch_add(1, AtomicOrdering::Relaxed)
+                + 1;
+            let _ = state.listings_change_channel.send(revision);
+            Ok(Some(revision))
+        }
+        ListingsSnapshotSource::Materialized => {
+            let source_revision = match increment_source_revision(Arc::clone(state)).await {
+                Ok(revision) => revision,
+                Err(error) => {
+                    state
+                        .listings_revision_pending
+                        .store(true, AtomicOrdering::Relaxed);
+                    state.listings_revision_notify.notify_one();
+                    return Err(error);
+                }
+            };
+            tracing::debug!(
+                source_revision,
+                "incremented materialized listings source revision"
+            );
+            Ok(None)
+        }
+    }
+}
+
+pub fn spawn_materialized_snapshot_reconcile_task(state: Arc<State>) {
+    let reconcile_state = Arc::clone(&state);
+    tokio::task::spawn(async move {
+        if reconcile_state.listings_snapshot_source != ListingsSnapshotSource::Materialized {
+            tracing::debug!(
+                "materialized listings snapshot reconciliation disabled in inline mode"
+            );
+            return;
+        }
+
+        let sleep_interval = Duration::from_secs(
+            reconcile_state
+                .materialized_snapshot_reconcile_interval_seconds
+                .max(5),
+        );
+
+        loop {
+            tokio::time::sleep(sleep_interval).await;
+            if let Err(error) =
+                crate::api::reconcile_materialized_snapshot_once(Arc::clone(&reconcile_state)).await
+            {
+                tracing::warn!(
+                    error = ?error,
+                    "failed to reconcile materialized listings snapshot"
+                );
             }
         }
     });
@@ -187,13 +266,30 @@ pub fn spawn_monitor_snapshot_task(state: Arc<State>) {
 
 #[cfg(test)]
 mod tests {
-    use super::spawn_listings_revision_publisher_task;
+    use super::{
+        publish_coalesced_listings_change_with_incrementer, spawn_listings_revision_publisher_task,
+    };
+    use crate::config::ListingsSnapshotSource;
     use crate::web::{IngestRateLimits, IngestSecurityConfig, State};
     use mongodb::Client;
-    use std::{collections::HashMap, sync::Arc, time::Duration};
+    use std::{
+        collections::HashMap,
+        sync::{
+            atomic::{AtomicBool, Ordering},
+            Arc,
+        },
+        time::Duration,
+    };
     use tokio::sync::{Notify, RwLock};
 
     async fn test_state_with_coalesce_window(coalesce_window: Duration) -> Arc<State> {
+        test_state_with_source(coalesce_window, ListingsSnapshotSource::Inline).await
+    }
+
+    async fn test_state_with_source(
+        coalesce_window: Duration,
+        listings_snapshot_source: ListingsSnapshotSource,
+    ) -> Arc<State> {
         let mongo = Client::with_uri_str("mongodb://127.0.0.1:27017")
             .await
             .expect("construct test mongo client");
@@ -208,6 +304,20 @@ mod tests {
             listings_revision_notify: Notify::new(),
             listings_revision_coalesce_window: coalesce_window,
             listings_snapshot_cache: Default::default(),
+            listings_snapshot_source,
+            listings_snapshot_collection_name: "listings_snapshots".to_string(),
+            listings_snapshot_document_id: "current".to_string(),
+            listing_source_state_collection_name: "listing_source_state".to_string(),
+            listing_source_state_document_id: "current".to_string(),
+            listing_snapshot_revision_state_collection_name: "listing_snapshot_revision_state"
+                .to_string(),
+            listing_snapshot_worker_lease_collection_name: "listing_snapshot_worker_leases"
+                .to_string(),
+            materialized_snapshot_reconcile_interval_seconds: 30,
+            snapshot_refresh_shared_secret: String::new(),
+            snapshot_refresh_client_id: "listings-snapshot-worker".to_string(),
+            snapshot_refresh_clock_skew_seconds: 300,
+            snapshot_refresh_nonce_ttl_seconds: 300,
             fflogs_jobs_limit: 1,
             fflogs_hidden_cache_ttl_hours: 24,
             listing_upsert_concurrency: 1,
@@ -241,6 +351,7 @@ mod tests {
             },
             ingest_rate_windows: RwLock::new(HashMap::new()),
             ingest_nonces: RwLock::new(HashMap::new()),
+            snapshot_refresh_nonces: RwLock::new(HashMap::new()),
             fflogs_job_leases: RwLock::new(HashMap::new()),
             fflogs_jobs_dispatched_total: Default::default(),
             fflogs_results_received_total: Default::default(),
@@ -299,5 +410,80 @@ mod tests {
 
         assert_eq!(first, initial_revision + 1);
         assert_eq!(second, initial_revision + 2);
+    }
+
+    #[tokio::test]
+    async fn materialized_revision_publisher_increments_source_revision_without_broadcasting() {
+        let state = test_state_with_source(
+            Duration::from_millis(1),
+            ListingsSnapshotSource::Materialized,
+        )
+        .await;
+        let mut receiver = state.listings_change_channel.subscribe();
+        let incremented_source_revision = Arc::new(AtomicBool::new(false));
+
+        state.notify_listings_changed(1);
+        publish_coalesced_listings_change_with_incrementer(&state, {
+            let incremented_source_revision = Arc::clone(&incremented_source_revision);
+            move |_state| async move {
+                incremented_source_revision.store(true, Ordering::SeqCst);
+                Ok(17)
+            }
+        })
+        .await
+        .expect("source revision publish should succeed");
+
+        assert!(incremented_source_revision.load(Ordering::SeqCst));
+        assert_eq!(state.current_listings_revision(), 0);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), receiver.recv())
+                .await
+                .is_err(),
+            "materialized source changes must not broadcast browser revisions"
+        );
+    }
+
+    #[tokio::test]
+    async fn materialized_revision_publisher_restores_pending_flag_when_source_increment_fails() {
+        let state = test_state_with_source(
+            Duration::from_millis(1),
+            ListingsSnapshotSource::Materialized,
+        )
+        .await;
+
+        state.notify_listings_changed(1);
+        let error = publish_coalesced_listings_change_with_incrementer(&state, |_state| async {
+            Err(anyhow::anyhow!("mongo unavailable"))
+        })
+        .await
+        .expect_err("source revision increment failure should be returned");
+
+        assert!(error.to_string().contains("mongo unavailable"));
+        assert!(state.listings_revision_pending.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn materialized_revision_publisher_renotifies_when_source_increment_fails() {
+        let state = test_state_with_source(
+            Duration::from_millis(1),
+            ListingsSnapshotSource::Materialized,
+        )
+        .await;
+
+        state
+            .listings_revision_pending
+            .store(true, Ordering::SeqCst);
+        publish_coalesced_listings_change_with_incrementer(&state, |_state| async {
+            Err(anyhow::anyhow!("transient mongo failure"))
+        })
+        .await
+        .expect_err("first source revision increment should fail");
+
+        tokio::time::timeout(
+            Duration::from_millis(50),
+            state.listings_revision_notify.notified(),
+        )
+        .await
+        .expect("failed materialized source revision publish should schedule a retry");
     }
 }

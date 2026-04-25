@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use anyhow::Context;
 use chrono::{DateTime, TimeDelta, Utc};
@@ -659,7 +662,10 @@ pub async fn get_players_by_content_ids(
 ) -> anyhow::Result<Vec<crate::player::Player>> {
     let as_i64 = content_ids.iter().map(|id| *id as i64).collect::<Vec<_>>();
     let cursor = collection
-        .find(doc! { "content_id": { "$in": as_i64 } }, None)
+        .find(
+            doc! { "content_id": { "$in": as_i64 } },
+            Some(player_lookup_find_options()),
+        )
         .await?;
 
     let players = cursor
@@ -673,7 +679,29 @@ pub async fn get_players_by_content_ids(
         .collect::<Vec<_>>()
         .await;
 
-    Ok(players)
+    Ok(dedupe_players_by_preferred_order(players))
+}
+
+fn player_lookup_find_options() -> FindOptions {
+    FindOptions::builder()
+        .sort(doc! {
+            "content_id": 1,
+            "identity_observed_at": -1,
+            "last_seen": -1,
+            "seen_count": -1,
+            "_id": 1,
+        })
+        .build()
+}
+
+fn dedupe_players_by_preferred_order(
+    players: Vec<crate::player::Player>,
+) -> Vec<crate::player::Player> {
+    let mut seen = HashSet::new();
+    players
+        .into_iter()
+        .filter(|player| seen.insert(player.content_id))
+        .collect()
 }
 
 pub async fn get_all_active_players(
@@ -857,7 +885,8 @@ fn report_parse_summary_find_options(zone_key: &str) -> FindOptions {
 mod tests {
     use super::{
         build_identity_compare_and_set_filter, build_identity_upsert_update,
-        build_player_upsert_documents, is_duplicate_key_error, report_parse_summary_find_options,
+        build_player_upsert_documents, dedupe_players_by_preferred_order, is_duplicate_key_error,
+        player_lookup_find_options, report_parse_summary_find_options,
         report_parse_summary_identity_filter, PreparedPlayerUpsert,
     };
     use chrono::Utc;
@@ -971,6 +1000,63 @@ mod tests {
         ));
 
         assert!(is_duplicate_key_error(&error));
+    }
+
+    #[test]
+    fn player_lookup_sort_matches_duplicate_cleanup_preference() {
+        let options = player_lookup_find_options();
+
+        assert_eq!(
+            options.sort.unwrap(),
+            doc! {
+                "content_id": 1,
+                "identity_observed_at": -1,
+                "last_seen": -1,
+                "seen_count": -1,
+                "_id": 1,
+            }
+        );
+    }
+
+    #[test]
+    fn player_lookup_dedupe_keeps_first_preferred_content_id() {
+        let now = Utc::now();
+        let players = vec![
+            crate::player::Player {
+                content_id: 9009,
+                name: "Preferred".to_string(),
+                home_world: 74,
+                current_world: 74,
+                last_seen: now,
+                seen_count: 7,
+                account_id: "1".to_string(),
+            },
+            crate::player::Player {
+                content_id: 9009,
+                name: "Stale".to_string(),
+                home_world: 80,
+                current_world: 80,
+                last_seen: now - chrono::TimeDelta::days(1),
+                seen_count: 1,
+                account_id: "2".to_string(),
+            },
+            crate::player::Player {
+                content_id: 9010,
+                name: "Other".to_string(),
+                home_world: 75,
+                current_world: 75,
+                last_seen: now,
+                seen_count: 1,
+                account_id: "3".to_string(),
+            },
+        ];
+
+        let deduped = dedupe_players_by_preferred_order(players);
+
+        assert_eq!(deduped.len(), 2);
+        assert_eq!(deduped[0].content_id, 9009);
+        assert_eq!(deduped[0].name, "Preferred");
+        assert_eq!(deduped[1].content_id, 9010);
     }
 
     #[test]
