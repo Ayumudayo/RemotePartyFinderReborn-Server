@@ -158,6 +158,34 @@ fn default_snapshot_refresh_client_id() -> String {
     "listings-snapshot-worker".to_string()
 }
 
+fn default_snapshot_worker_enabled() -> bool {
+    true
+}
+
+fn default_snapshot_worker_tick_seconds() -> u64 {
+    5
+}
+
+fn default_snapshot_worker_force_rebuild_interval_seconds() -> u64 {
+    300
+}
+
+fn default_snapshot_worker_lease_ttl_seconds() -> u64 {
+    120
+}
+
+fn default_snapshot_worker_owner_id() -> String {
+    String::new()
+}
+
+fn default_snapshot_worker_refresh_url() -> String {
+    String::new()
+}
+
+fn default_snapshot_worker_log_filter() -> String {
+    "info,remote_party_finder_reborn=debug".to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ListingsSnapshotSource {
@@ -169,16 +197,38 @@ pub enum ListingsSnapshotSource {
 pub struct Config {
     pub web: Web,
     pub mongo: Mongo,
+    #[serde(default)]
+    pub snapshot_worker: SnapshotWorker,
 }
 
 impl Config {
     pub fn validate(&self) -> Result<()> {
+        self.validate_for_server()
+    }
+
+    pub fn validate_for_server(&self) -> Result<()> {
         if self.web.listings_snapshot_source == ListingsSnapshotSource::Materialized
             && self.web.snapshot_refresh_shared_secret.trim().is_empty()
         {
             bail!(
                 "web.snapshot_refresh_shared_secret must be set when listings_snapshot_source is materialized"
             );
+        }
+
+        Ok(())
+    }
+
+    pub fn validate_for_snapshot_worker(&self) -> Result<()> {
+        if !self.snapshot_worker.enabled {
+            return Ok(());
+        }
+
+        if self.web.snapshot_refresh_shared_secret.trim().is_empty() {
+            bail!("web.snapshot_refresh_shared_secret must be set when snapshot_worker.enabled is true");
+        }
+
+        if self.snapshot_worker.refresh_url.trim().is_empty() {
+            bail!("snapshot_worker.refresh_url must be set when snapshot_worker.enabled is true");
         }
 
         Ok(())
@@ -273,6 +323,39 @@ pub struct Mongo {
     pub url: String,
 }
 
+#[derive(Deserialize)]
+pub struct SnapshotWorker {
+    #[serde(default = "default_snapshot_worker_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_snapshot_worker_tick_seconds")]
+    pub tick_seconds: u64,
+    #[serde(default = "default_snapshot_worker_force_rebuild_interval_seconds")]
+    pub force_rebuild_interval_seconds: u64,
+    #[serde(default = "default_snapshot_worker_lease_ttl_seconds")]
+    pub lease_ttl_seconds: u64,
+    #[serde(default = "default_snapshot_worker_owner_id")]
+    pub owner_id: String,
+    #[serde(default = "default_snapshot_worker_refresh_url")]
+    pub refresh_url: String,
+    #[serde(default = "default_snapshot_worker_log_filter")]
+    pub log_filter: String,
+}
+
+impl Default for SnapshotWorker {
+    fn default() -> Self {
+        Self {
+            enabled: default_snapshot_worker_enabled(),
+            tick_seconds: default_snapshot_worker_tick_seconds(),
+            force_rebuild_interval_seconds: default_snapshot_worker_force_rebuild_interval_seconds(
+            ),
+            lease_ttl_seconds: default_snapshot_worker_lease_ttl_seconds(),
+            owner_id: default_snapshot_worker_owner_id(),
+            refresh_url: default_snapshot_worker_refresh_url(),
+            log_filter: default_snapshot_worker_log_filter(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{Config, ListingsSnapshotSource};
@@ -326,7 +409,7 @@ url = "mongodb://127.0.0.1:27017"
             "listings-snapshot-worker"
         );
         config
-            .validate()
+            .validate_for_server()
             .expect("inline mode may use a blank refresh secret");
     }
 
@@ -341,12 +424,74 @@ snapshot_refresh_shared_secret = "   "
         .expect("config should parse");
 
         let error = config
-            .validate()
+            .validate_for_server()
             .expect_err("materialized mode must fail closed without refresh secret");
 
         assert!(
             error.to_string().contains("snapshot_refresh_shared_secret"),
             "unexpected validation error: {error:#}"
         );
+    }
+
+    #[test]
+    fn snapshot_worker_defaults_are_safe_but_server_inline_validation_ignores_refresh_url() {
+        let config: Config = toml::from_str(&minimal_config_toml("")).expect("config should parse");
+
+        assert_eq!(config.snapshot_worker.enabled, true);
+        assert_eq!(config.snapshot_worker.tick_seconds, 5);
+        assert_eq!(config.snapshot_worker.force_rebuild_interval_seconds, 300);
+        assert_eq!(config.snapshot_worker.lease_ttl_seconds, 120);
+        assert_eq!(config.snapshot_worker.owner_id, "");
+        assert_eq!(config.snapshot_worker.refresh_url, "");
+        assert_eq!(
+            config.snapshot_worker.log_filter,
+            "info,remote_party_finder_reborn=debug"
+        );
+        config
+            .validate_for_server()
+            .expect("inline server mode should not require worker refresh URL");
+    }
+
+    #[test]
+    fn snapshot_worker_validation_rejects_blank_refresh_url_and_secret_when_enabled() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+snapshot_refresh_shared_secret = "   "
+
+[snapshot_worker]
+enabled = true
+refresh_url = " "
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_snapshot_worker()
+            .expect_err("enabled worker must require refresh URL and secret");
+
+        let message = error.to_string();
+        assert!(
+            message.contains("snapshot_refresh_shared_secret")
+                || message.contains("snapshot_worker.refresh_url"),
+            "unexpected validation error: {message}"
+        );
+    }
+
+    #[test]
+    fn disabled_snapshot_worker_validation_allows_blank_refresh_url_and_secret() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+snapshot_refresh_shared_secret = "   "
+
+[snapshot_worker]
+enabled = false
+refresh_url = " "
+"#,
+        ))
+        .expect("config should parse");
+
+        config
+            .validate_for_snapshot_worker()
+            .expect("disabled worker should not require runtime worker fields");
     }
 }

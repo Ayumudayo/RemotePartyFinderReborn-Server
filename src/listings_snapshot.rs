@@ -13,6 +13,7 @@ use flate2::Compression;
 use mongodb::{
     bson::{doc, spec::BinarySubtype, Binary, Document},
     options::{FindOneAndUpdateOptions, ReturnDocument, UpdateOptions},
+    Collection,
 };
 use serde::{Deserialize, Serialize};
 use sestring::{Payload, SeString};
@@ -146,13 +147,14 @@ pub fn gunzip_body(body: &[u8]) -> anyhow::Result<Vec<u8>> {
 }
 
 pub fn materialized_doc_from_snapshot(
+    document_id: &str,
     snapshot: BuiltListingsSnapshot,
     source_revision: i64,
 ) -> anyhow::Result<MaterializedListingsSnapshotDoc> {
     let body_gzip = gzip_body(&snapshot.body)?;
 
     Ok(MaterializedListingsSnapshotDoc {
-        id: snapshot.revision.to_string(),
+        id: document_id.to_string(),
         revision: snapshot.revision,
         source_revision,
         etag: snapshot.etag,
@@ -165,6 +167,26 @@ pub fn materialized_doc_from_snapshot(
             bytes: body_gzip,
         },
     })
+}
+
+pub async fn load_listing_source_state(
+    collection: &Collection<ListingSourceStateDoc>,
+    id: &str,
+) -> anyhow::Result<Option<ListingSourceStateDoc>> {
+    collection
+        .find_one(doc! { "_id": id }, None)
+        .await
+        .context("failed to load listing source state")
+}
+
+pub async fn load_current_materialized_doc(
+    collection: &Collection<MaterializedListingsSnapshotDoc>,
+    id: &str,
+) -> anyhow::Result<Option<MaterializedListingsSnapshotDoc>> {
+    collection
+        .find_one(doc! { "_id": id }, None)
+        .await
+        .context("failed to load current materialized listings snapshot document")
 }
 
 pub fn cached_snapshot_from_materialized_doc(
@@ -185,9 +207,8 @@ pub fn cached_snapshot_from_materialized_doc(
 pub async fn load_current_materialized_snapshot(
     state: &State,
 ) -> anyhow::Result<Option<CachedListingsSnapshot>> {
-    let doc = state
-        .listings_snapshot_collection()
-        .find_one(doc! { "_id": &state.listings_snapshot_document_id }, None)
+    let collection = state.listings_snapshot_collection();
+    let doc = load_current_materialized_doc(&collection, &state.listings_snapshot_document_id)
         .await
         .context("failed to load current materialized listings snapshot")?;
 
@@ -229,6 +250,154 @@ pub async fn increment_listing_source_revision(state: &State) -> anyhow::Result<
         .context("listing source revision update returned no document")?;
 
     Ok(doc.revision)
+}
+
+pub fn materialized_revision_allocate_update(
+    document_id: &str,
+    updated_at: DateTime<Utc>,
+) -> (Document, Document, FindOneAndUpdateOptions) {
+    let filter = doc! { "_id": document_id };
+    let update = doc! {
+        "$inc": { "revision": 1_i64 },
+        "$set": { "updated_at": mongodb::bson::DateTime::from_chrono(updated_at) },
+        "$setOnInsert": { "_id": document_id },
+    };
+    let options = FindOneAndUpdateOptions::builder()
+        .upsert(true)
+        .return_document(ReturnDocument::After)
+        .build();
+
+    (filter, update, options)
+}
+
+pub async fn allocate_materialized_revision(
+    collection: &Collection<ListingSnapshotRevisionStateDoc>,
+    id: &str,
+) -> anyhow::Result<i64> {
+    let (filter, update, options) = materialized_revision_allocate_update(id, Utc::now());
+    let doc = collection
+        .find_one_and_update(filter, update, options)
+        .await
+        .context("failed to allocate materialized listings snapshot revision")?
+        .context("materialized listings snapshot revision allocation returned no document")?;
+
+    Ok(doc.revision)
+}
+
+pub fn snapshot_worker_lease_acquire_update(
+    document_id: &str,
+    owner_id: &str,
+    now: DateTime<Utc>,
+    expires_at: DateTime<Utc>,
+) -> (Document, Document, UpdateOptions) {
+    let filter = doc! {
+        "_id": document_id,
+        "$or": [
+            { "expires_at": { "$lte": mongodb::bson::DateTime::from_chrono(now) } },
+            { "owner_id": owner_id },
+        ],
+    };
+    let update = doc! {
+        "$set": {
+            "owner_id": owner_id,
+            "expires_at": mongodb::bson::DateTime::from_chrono(expires_at),
+            "updated_at": mongodb::bson::DateTime::from_chrono(now),
+        },
+        "$setOnInsert": { "_id": document_id },
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
+
+    (filter, update, options)
+}
+
+pub fn snapshot_worker_lease_can_acquire(
+    current: Option<&ListingSnapshotWorkerLeaseDoc>,
+    owner_id: &str,
+    now: DateTime<Utc>,
+) -> bool {
+    match current {
+        Some(lease) => lease.expires_at <= now || lease.owner_id == owner_id,
+        None => true,
+    }
+}
+
+fn is_duplicate_key_error(error: &mongodb::error::Error) -> bool {
+    error.to_string().contains("E11000") || error.to_string().contains("duplicate key")
+}
+
+pub async fn try_acquire_snapshot_worker_lease(
+    collection: &Collection<ListingSnapshotWorkerLeaseDoc>,
+    id: &str,
+    owner_id: &str,
+    now: DateTime<Utc>,
+    lease_ttl_seconds: i64,
+) -> anyhow::Result<bool> {
+    let expires_at = now + chrono::TimeDelta::seconds(lease_ttl_seconds.max(1));
+    let (filter, update, options) =
+        snapshot_worker_lease_acquire_update(id, owner_id, now, expires_at);
+
+    match collection.update_one(filter, update, options).await {
+        Ok(result) => Ok(result.matched_count == 1 || result.upserted_id.is_some()),
+        Err(error) if is_duplicate_key_error(&error) => Ok(false),
+        Err(error) => Err(error).context("failed to acquire listings snapshot worker lease"),
+    }
+}
+
+pub fn materialized_snapshot_cas_filter(
+    document_id: &str,
+    revision: i64,
+    payload_hash: &str,
+) -> Document {
+    doc! {
+        "_id": document_id,
+        "$and": [
+            {
+                "$or": [
+                    { "revision": { "$lt": revision } },
+                    { "revision": { "$exists": false } },
+                ],
+            },
+            {
+                "$or": [
+                    { "payload_hash": { "$ne": payload_hash } },
+                    { "payload_hash": { "$exists": false } },
+                ],
+            },
+        ],
+    }
+}
+
+pub fn materialized_snapshot_cas_update(
+    document_id: &str,
+    built: BuiltListingsSnapshot,
+    source_revision: i64,
+) -> anyhow::Result<(Document, Document, UpdateOptions)> {
+    let filter = materialized_snapshot_cas_filter(document_id, built.revision, &built.payload_hash);
+    let doc = materialized_doc_from_snapshot(document_id, built, source_revision)?;
+    let mut set_doc = mongodb::bson::to_document(&doc)
+        .context("failed to serialize materialized listings snapshot document")?;
+    set_doc.remove("_id");
+    let update = doc! {
+        "$set": set_doc,
+        "$setOnInsert": { "_id": document_id },
+    };
+    let options = UpdateOptions::builder().upsert(true).build();
+
+    Ok((filter, update, options))
+}
+
+pub async fn try_write_materialized_snapshot_cas(
+    collection: &Collection<MaterializedListingsSnapshotDoc>,
+    id: &str,
+    built: BuiltListingsSnapshot,
+    source_revision: i64,
+) -> anyhow::Result<bool> {
+    let (filter, update, options) = materialized_snapshot_cas_update(id, built, source_revision)?;
+    match collection.update_one(filter, update, options).await {
+        Ok(result) => Ok(result.matched_count == 1 || result.upserted_id.is_some()),
+        Err(error) if is_duplicate_key_error(&error) => Ok(false),
+        Err(error) => Err(error).context("failed to write materialized listings snapshot"),
+    }
 }
 
 fn hash_bytes(bytes: &[u8]) -> String {
@@ -611,11 +780,12 @@ mod tests {
         let etag = built.etag.clone();
         let payload_hash = built.payload_hash.clone();
 
-        let doc =
-            materialized_doc_from_snapshot(built, 41).expect("materialized snapshot should encode");
+        let doc = materialized_doc_from_snapshot("current", built, 41)
+            .expect("materialized snapshot should encode");
         let cached = cached_snapshot_from_materialized_doc(&doc)
             .expect("materialized snapshot should decode");
 
+        assert_eq!(doc.id, "current");
         assert_eq!(doc.revision, 42);
         assert_eq!(doc.source_revision, 41);
         assert_eq!(doc.etag, etag);
@@ -653,5 +823,128 @@ mod tests {
             &mongodb::bson::doc! { "_id": "current" }
         );
         assert_eq!(options.upsert, Some(true));
+    }
+
+    #[test]
+    fn materialized_revision_allocate_update_increments_requested_document() {
+        let (filter, update, options) =
+            materialized_revision_allocate_update("current", Utc::now());
+
+        assert_eq!(filter, mongodb::bson::doc! { "_id": "current" });
+        assert_eq!(
+            update.get_document("$inc").unwrap(),
+            &mongodb::bson::doc! { "revision": 1_i64 }
+        );
+        assert!(update
+            .get_document("$set")
+            .unwrap()
+            .contains_key("updated_at"));
+        assert_eq!(
+            update.get_document("$setOnInsert").unwrap(),
+            &mongodb::bson::doc! { "_id": "current" }
+        );
+        assert_eq!(options.upsert, Some(true));
+        assert!(matches!(
+            options.return_document,
+            Some(ReturnDocument::After)
+        ));
+    }
+
+    #[test]
+    fn worker_lease_filter_allows_absent_expired_or_same_owner() {
+        let now = Utc::now();
+        let expires_at = now + chrono::TimeDelta::seconds(120);
+
+        let (filter, update, options) =
+            snapshot_worker_lease_acquire_update("current", "owner-a", now, expires_at);
+
+        assert_eq!(
+            filter,
+            mongodb::bson::doc! {
+                "_id": "current",
+                "$or": [
+                    { "expires_at": { "$lte": mongodb::bson::DateTime::from_chrono(now) } },
+                    { "owner_id": "owner-a" },
+                ],
+            }
+        );
+        assert_eq!(
+            update,
+            mongodb::bson::doc! {
+                "$set": {
+                    "owner_id": "owner-a",
+                    "expires_at": mongodb::bson::DateTime::from_chrono(expires_at),
+                    "updated_at": mongodb::bson::DateTime::from_chrono(now),
+                },
+                "$setOnInsert": { "_id": "current" },
+            }
+        );
+        assert_eq!(options.upsert, Some(true));
+    }
+
+    #[test]
+    fn worker_lease_predicate_allows_absent_expired_or_same_owner_and_blocks_active_other_owner() {
+        let now = Utc::now();
+        let expired_other_owner = ListingSnapshotWorkerLeaseDoc {
+            id: "current".to_string(),
+            owner_id: "owner-b".to_string(),
+            expires_at: now - chrono::TimeDelta::seconds(1),
+            updated_at: now,
+        };
+        let active_same_owner = ListingSnapshotWorkerLeaseDoc {
+            id: "current".to_string(),
+            owner_id: "owner-a".to_string(),
+            expires_at: now + chrono::TimeDelta::seconds(120),
+            updated_at: now,
+        };
+        let active_other_owner = ListingSnapshotWorkerLeaseDoc {
+            id: "current".to_string(),
+            owner_id: "owner-b".to_string(),
+            expires_at: now + chrono::TimeDelta::seconds(120),
+            updated_at: now,
+        };
+
+        assert!(snapshot_worker_lease_can_acquire(None, "owner-a", now));
+        assert!(snapshot_worker_lease_can_acquire(
+            Some(&expired_other_owner),
+            "owner-a",
+            now
+        ));
+        assert!(snapshot_worker_lease_can_acquire(
+            Some(&active_same_owner),
+            "owner-a",
+            now
+        ));
+        assert!(!snapshot_worker_lease_can_acquire(
+            Some(&active_other_owner),
+            "owner-a",
+            now
+        ));
+    }
+
+    #[test]
+    fn materialized_snapshot_cas_filter_rejects_stale_or_same_payload_overwrites() {
+        let filter = materialized_snapshot_cas_filter("current", 10, "sha256-new");
+
+        assert_eq!(
+            filter,
+            mongodb::bson::doc! {
+                "_id": "current",
+                "$and": [
+                    {
+                        "$or": [
+                            { "revision": { "$lt": 10_i64 } },
+                            { "revision": { "$exists": false } },
+                        ],
+                    },
+                    {
+                        "$or": [
+                            { "payload_hash": { "$ne": "sha256-new" } },
+                            { "payload_hash": { "$exists": false } },
+                        ],
+                    },
+                ],
+            }
+        );
     }
 }

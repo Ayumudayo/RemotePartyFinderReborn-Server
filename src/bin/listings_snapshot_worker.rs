@@ -1,0 +1,396 @@
+use anyhow::{bail, Context};
+use base64::encode as base64_encode;
+use chrono::Utc;
+use hmac::{Hmac, Mac};
+use remote_party_finder_reborn::config::Config;
+use remote_party_finder_reborn::listings_snapshot::{
+    allocate_materialized_revision, build_listings_payload, load_current_materialized_doc,
+    load_listing_source_state, serialize_snapshot, try_acquire_snapshot_worker_lease,
+    try_write_materialized_snapshot_cas,
+};
+use remote_party_finder_reborn::web::State;
+use sha2::Sha256;
+use std::path::Path;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::fs::File;
+use tokio::io::AsyncReadExt;
+use uuid::Uuid;
+
+const SNAPSHOT_REFRESH_PATH: &str = "/internal/listings/snapshot/refresh";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SnapshotWorkerDecision {
+    Build,
+    Skip,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct WorkerArgs {
+    config_path: String,
+    once: bool,
+}
+
+pub fn should_build_snapshot(
+    last_source_revision: Option<i64>,
+    current_source_revision: i64,
+    force_due: bool,
+) -> SnapshotWorkerDecision {
+    if last_source_revision.is_none()
+        || last_source_revision.is_some_and(|revision| current_source_revision > revision)
+        || force_due
+    {
+        SnapshotWorkerDecision::Build
+    } else {
+        SnapshotWorkerDecision::Skip
+    }
+}
+
+pub fn compute_refresh_signature(
+    secret: &str,
+    payload: &str,
+) -> Result<String, hmac::digest::InvalidLength> {
+    let mut mac = Hmac::<Sha256>::new_from_slice(secret.as_bytes())?;
+    mac.update(payload.as_bytes());
+    Ok(base64_encode(mac.finalize().into_bytes()))
+}
+
+#[tokio::main]
+async fn main() {
+    if let Err(error) = run().await {
+        eprintln!("listings snapshot worker failed: {error:#}");
+        tracing::error!("listings snapshot worker failed: {error:#}");
+        std::process::exit(1);
+    }
+}
+
+async fn run() -> anyhow::Result<()> {
+    let args = parse_args(std::env::args().skip(1))?;
+    let config = Arc::new(load_config(&args.config_path).await?);
+
+    init_tracing(&config.snapshot_worker.log_filter);
+    config.validate_for_snapshot_worker()?;
+
+    if !config.snapshot_worker.enabled {
+        tracing::info!("listings snapshot worker disabled by config");
+        return Ok(());
+    }
+
+    let owner_id = effective_owner_id(&config.snapshot_worker.owner_id);
+    let refresh_url = config.snapshot_worker.refresh_url.trim().to_string();
+    let tick_interval = Duration::from_secs(config.snapshot_worker.tick_seconds.max(1));
+    let force_interval =
+        Duration::from_secs(config.snapshot_worker.force_rebuild_interval_seconds.max(1));
+    let lease_ttl_seconds = config.snapshot_worker.lease_ttl_seconds.max(1) as i64;
+    let state = State::new(Arc::clone(&config)).await?;
+    let client = reqwest::Client::new();
+    let mut last_source_revision = None;
+    let mut last_forced_build_at = Instant::now();
+
+    loop {
+        let force_due = last_forced_build_at.elapsed() >= force_interval;
+        match run_tick(
+            Arc::clone(&state),
+            &client,
+            &refresh_url,
+            &owner_id,
+            lease_ttl_seconds,
+            force_due,
+            &mut last_source_revision,
+            &mut last_forced_build_at,
+        )
+        .await
+        {
+            Ok(outcome) => {
+                tracing::debug!(?outcome, "listings snapshot worker tick completed");
+            }
+            Err(error) => {
+                tracing::error!("listings snapshot worker tick failed: {error:#}");
+                if args.once {
+                    return Err(error);
+                }
+            }
+        }
+
+        if args.once {
+            return Ok(());
+        }
+
+        tokio::time::sleep(tick_interval).await;
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TickOutcome {
+    SkippedNoChange,
+    SkippedLeaseHeld,
+    BuiltUnchanged,
+    WroteAndRefreshed,
+    CasRejected,
+}
+
+async fn run_tick(
+    state: Arc<State>,
+    client: &reqwest::Client,
+    refresh_url: &str,
+    owner_id: &str,
+    lease_ttl_seconds: i64,
+    force_due: bool,
+    last_source_revision: &mut Option<i64>,
+    last_forced_build_at: &mut Instant,
+) -> anyhow::Result<TickOutcome> {
+    let source_collection = state.listing_source_state_collection();
+    let source_state =
+        load_listing_source_state(&source_collection, &state.listing_source_state_document_id)
+            .await?;
+    let current_source_revision = source_state.as_ref().map(|doc| doc.revision).unwrap_or(0);
+
+    if should_build_snapshot(*last_source_revision, current_source_revision, force_due)
+        == SnapshotWorkerDecision::Skip
+    {
+        return Ok(TickOutcome::SkippedNoChange);
+    }
+
+    let lease_collection = state.listing_snapshot_worker_lease_collection();
+    let lease_acquired = try_acquire_snapshot_worker_lease(
+        &lease_collection,
+        "current",
+        owner_id,
+        Utc::now(),
+        lease_ttl_seconds,
+    )
+    .await?;
+    if !lease_acquired {
+        return Ok(TickOutcome::SkippedLeaseHeld);
+    }
+
+    let payload = build_listings_payload(Arc::clone(&state)).await?;
+    let snapshot_collection = state.listings_snapshot_collection();
+    let current_doc =
+        load_current_materialized_doc(&snapshot_collection, &state.listings_snapshot_document_id)
+            .await?;
+    if current_doc
+        .as_ref()
+        .is_some_and(|doc| doc.payload_hash == payload.payload_hash)
+    {
+        *last_source_revision = Some(current_source_revision);
+        if force_due {
+            *last_forced_build_at = Instant::now();
+        }
+        return Ok(TickOutcome::BuiltUnchanged);
+    }
+
+    let revision_collection = state.listing_snapshot_revision_state_collection();
+    let revision =
+        allocate_materialized_revision(&revision_collection, &state.listings_snapshot_document_id)
+            .await?;
+    let built = serialize_snapshot(revision, payload)?;
+    let wrote = try_write_materialized_snapshot_cas(
+        &snapshot_collection,
+        &state.listings_snapshot_document_id,
+        built,
+        current_source_revision,
+    )
+    .await?;
+
+    *last_source_revision = Some(current_source_revision);
+    *last_forced_build_at = Instant::now();
+
+    if !wrote {
+        return Ok(TickOutcome::CasRejected);
+    }
+
+    send_refresh_request(
+        client,
+        refresh_url,
+        &state.snapshot_refresh_client_id,
+        &state.snapshot_refresh_shared_secret,
+    )
+    .await?;
+
+    Ok(TickOutcome::WroteAndRefreshed)
+}
+
+fn parse_args(args: impl IntoIterator<Item = String>) -> anyhow::Result<WorkerArgs> {
+    let mut config_path = None;
+    let mut once = false;
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--once" => once = true,
+            "--config" => {
+                let Some(path) = iter.next() else {
+                    bail!("--config requires a path");
+                };
+                config_path = Some(path);
+            }
+            value if value.starts_with("--config=") => {
+                config_path = Some(value["--config=".len()..].to_string());
+            }
+            value if value.starts_with('-') => bail!("unsupported argument: {value}"),
+            value => {
+                if config_path.is_some() {
+                    bail!("multiple config paths supplied");
+                }
+                config_path = Some(value.to_string());
+            }
+        }
+    }
+
+    Ok(WorkerArgs {
+        config_path: config_path.unwrap_or_else(|| "./config.toml".to_string()),
+        once,
+    })
+}
+
+async fn load_config(path: impl AsRef<Path>) -> anyhow::Result<Config> {
+    let mut file = File::open(path)
+        .await
+        .context("could not open config file")?;
+    let mut toml = String::new();
+    file.read_to_string(&mut toml)
+        .await
+        .context("could not read config file")?;
+    toml::from_str(&toml).context("could not parse config file")
+}
+
+fn init_tracing(log_filter: &str) {
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new(log_filter));
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(filter)
+        .with_ansi(true)
+        .with_target(true)
+        .with_line_number(true)
+        .with_thread_ids(true)
+        .try_init();
+}
+
+fn effective_owner_id(configured: &str) -> String {
+    let configured = configured.trim();
+    if !configured.is_empty() {
+        return configured.to_string();
+    }
+
+    let host = std::env::var("HOSTNAME")
+        .or_else(|_| std::env::var("COMPUTERNAME"))
+        .unwrap_or_else(|_| "unknown-host".to_string());
+    format!("{}-{}-{}", host, std::process::id(), Uuid::new_v4())
+}
+
+async fn send_refresh_request(
+    client: &reqwest::Client,
+    refresh_url: &str,
+    client_id: &str,
+    secret: &str,
+) -> anyhow::Result<()> {
+    let timestamp = Utc::now().timestamp().to_string();
+    let nonce = Uuid::new_v4().to_string();
+    let payload = refresh_signature_payload(&timestamp, &nonce, client_id);
+    let signature = compute_refresh_signature(secret, &payload)
+        .context("failed to sign snapshot refresh request")?;
+
+    let response = client
+        .post(refresh_url)
+        .header("x-rpf-client-id", client_id)
+        .header("x-rpf-timestamp", timestamp)
+        .header("x-rpf-nonce", nonce)
+        .header("x-rpf-signature-version", "v1")
+        .header("x-rpf-signature", signature)
+        .send()
+        .await
+        .context("failed to send snapshot refresh request")?;
+
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        bail!("snapshot refresh request failed with status {status}: {body}");
+    }
+
+    Ok(())
+}
+
+fn refresh_signature_payload(timestamp: &str, nonce: &str, client_id: &str) -> String {
+    format!(
+        "POST\n{}\n{}\n{}\n{}",
+        SNAPSHOT_REFRESH_PATH, timestamp, nonce, client_id
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn first_tick_builds_snapshot() {
+        assert_eq!(
+            should_build_snapshot(None, 0, false),
+            SnapshotWorkerDecision::Build
+        );
+    }
+
+    #[test]
+    fn same_revision_does_not_build_unless_force_due() {
+        assert_eq!(
+            should_build_snapshot(Some(7), 7, false),
+            SnapshotWorkerDecision::Skip
+        );
+        assert_eq!(
+            should_build_snapshot(Some(7), 7, true),
+            SnapshotWorkerDecision::Build
+        );
+    }
+
+    #[test]
+    fn advanced_revision_builds_snapshot() {
+        assert_eq!(
+            should_build_snapshot(Some(7), 8, false),
+            SnapshotWorkerDecision::Build
+        );
+    }
+
+    #[test]
+    fn stale_source_revision_does_not_build_without_force() {
+        assert_eq!(
+            should_build_snapshot(Some(8), 7, false),
+            SnapshotWorkerDecision::Skip
+        );
+    }
+
+    #[test]
+    fn refresh_signature_uses_server_payload_contract() {
+        let signature = compute_refresh_signature(
+            "secret",
+            "POST\n/internal/listings/snapshot/refresh\n1700000000\nnonce-1\nworker-1",
+        )
+        .expect("signature should compute");
+
+        assert_eq!(signature, "zfTilkxB69wIMMGr88k+/bw69LFoyVfD4W07ZS1c/gQ=");
+    }
+
+    #[test]
+    fn args_accept_default_config_config_flag_positional_and_once() {
+        assert_eq!(
+            parse_args(Vec::<String>::new()).unwrap(),
+            WorkerArgs {
+                config_path: "./config.toml".to_string(),
+                once: false
+            }
+        );
+        assert_eq!(
+            parse_args(["--config", "worker.toml", "--once"].map(str::to_string)).unwrap(),
+            WorkerArgs {
+                config_path: "worker.toml".to_string(),
+                once: true
+            }
+        );
+        assert_eq!(
+            parse_args(["worker.toml"].map(str::to_string)).unwrap(),
+            WorkerArgs {
+                config_path: "worker.toml".to_string(),
+                once: false
+            }
+        );
+    }
+}

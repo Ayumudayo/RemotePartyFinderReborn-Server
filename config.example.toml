@@ -48,5 +48,32 @@ ingest_capability_secret = ""
 ingest_capability_session_ttl_seconds = 43200
 ingest_capability_detail_ttl_seconds = 900
 
+# Listings snapshot serving.
+# "inline" builds snapshots in the web process. "materialized" serves Mongo-backed
+# snapshots written by listings_snapshot_worker.
+listings_snapshot_source = "inline"
+listings_snapshot_collection = "listings_snapshots"
+listings_snapshot_document_id = "current"
+listing_source_state_collection = "listing_source_state"
+listing_source_state_document_id = "current"
+listing_snapshot_revision_state_collection = "listing_snapshot_revision_state"
+listing_snapshot_worker_lease_collection = "listing_snapshot_worker_leases"
+materialized_snapshot_reconcile_interval_seconds = 30
+
+# Required when listings_snapshot_source = "materialized" or when running the
+# snapshot worker. Use the same values in the web and worker config.
+snapshot_refresh_shared_secret = ""
+snapshot_refresh_client_id = "listings-snapshot-worker"
+
 [mongo]
 url = "YOUR_MONGODB_CONNECTION_STRING"
+
+[snapshot_worker]
+# Used only by the listings_snapshot_worker binary.
+enabled = true
+tick_seconds = 5
+force_rebuild_interval_seconds = 300
+lease_ttl_seconds = 120
+owner_id = ""
+refresh_url = ""
+log_filter = "info,remote_party_finder_reborn=debug"
