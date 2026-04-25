@@ -172,7 +172,9 @@ where
     {
         let cache = state.listings_snapshot_cache.read().await;
         if let ListingsSnapshotCacheState::Ready(snapshot) = &*cache {
-            return Ok(Some(snapshot.clone()));
+            if snapshot.revision >= state.current_listings_revision() {
+                return Ok(Some(snapshot.clone()));
+            }
         }
     }
 
@@ -182,8 +184,21 @@ where
 
     let outcome = apply_materialized_snapshot_if_newer(&state, snapshot.clone()).await;
     if outcome.applied_revision.is_none() {
+        let current_revision = state.current_listings_revision();
+        if snapshot.revision < current_revision {
+            let cache = state.listings_snapshot_cache.read().await;
+            if let ListingsSnapshotCacheState::Ready(cached) = &*cache {
+                if cached.revision >= current_revision {
+                    return Ok(Some(cached.clone()));
+                }
+            }
+            return Ok(None);
+        }
+
         let mut cache = state.listings_snapshot_cache.write().await;
-        if matches!(&*cache, ListingsSnapshotCacheState::Empty) {
+        if matches!(&*cache, ListingsSnapshotCacheState::Empty)
+            || matches!(&*cache, ListingsSnapshotCacheState::Ready(cached) if cached.revision < snapshot.revision)
+        {
             *cache = ListingsSnapshotCacheState::Ready(snapshot.clone());
         }
     }
@@ -261,32 +276,26 @@ async fn apply_materialized_snapshot_if_newer(
     snapshot: CachedListingsSnapshot,
 ) -> ApplyMaterializedSnapshotOutcome {
     let revision = snapshot.revision;
+    let mut cache = state.listings_snapshot_cache.write().await;
+    let current = state.current_listings_revision();
 
-    loop {
-        let current = state.current_listings_revision();
-        if revision <= current {
-            return ApplyMaterializedSnapshotOutcome {
-                applied_revision: None,
-            };
-        }
+    if revision <= current {
+        return ApplyMaterializedSnapshotOutcome {
+            applied_revision: None,
+        };
+    }
 
-        if state
-            .listings_revision
-            .compare_exchange(
-                current,
-                revision,
-                AtomicOrdering::Relaxed,
-                AtomicOrdering::Relaxed,
-            )
-            .is_ok()
-        {
-            *state.listings_snapshot_cache.write().await =
-                ListingsSnapshotCacheState::Ready(snapshot);
-            let _ = state.listings_change_channel.send(revision);
-            return ApplyMaterializedSnapshotOutcome {
-                applied_revision: Some(revision),
-            };
-        }
+    // Publish the cache before the visible revision so clients can never observe
+    // a revision that this process cannot serve from memory.
+    *cache = ListingsSnapshotCacheState::Ready(snapshot);
+    state
+        .listings_revision
+        .store(revision, AtomicOrdering::Relaxed);
+    drop(cache);
+
+    let _ = state.listings_change_channel.send(revision);
+    ApplyMaterializedSnapshotOutcome {
+        applied_revision: Some(revision),
     }
 }
 
@@ -578,8 +587,9 @@ mod tests {
 
     use super::{
         apply_materialized_snapshot_if_newer, authorize_snapshot_refresh_request,
-        build_snapshot_payload, get_or_build_cached_snapshot,
-        materialized_snapshot_result_response, reconcile_materialized_snapshot_once_with_loader,
+        build_snapshot_payload, get_materialized_cached_snapshot_with_loader,
+        get_or_build_cached_snapshot, materialized_snapshot_result_response,
+        reconcile_materialized_snapshot_once_with_loader,
         refresh_materialized_snapshot_with_loader, snapshot_json_response, CachedListingsSnapshot,
     };
 
@@ -1069,5 +1079,27 @@ mod tests {
 
         assert_eq!(applied.applied_revision, Some(4));
         assert_eq!(ignored.applied_revision, None);
+    }
+
+    #[tokio::test]
+    async fn materialized_snapshot_fetch_ignores_cache_older_than_visible_revision() {
+        let state = test_state(ListingsSnapshotSource::Materialized, 8).await;
+        *state.listings_snapshot_cache.write().await =
+            ListingsSnapshotCacheState::Ready(sample_cached_snapshot(7));
+        let loads = Arc::new(AtomicUsize::new(0));
+
+        let snapshot = get_materialized_cached_snapshot_with_loader(Arc::clone(&state), {
+            let loads = Arc::clone(&loads);
+            || async move {
+                loads.fetch_add(1, Ordering::SeqCst);
+                Ok(Some(sample_cached_snapshot(8)))
+            }
+        })
+        .await
+        .expect("materialized snapshot lookup should succeed")
+        .expect("loader should return a snapshot");
+
+        assert_eq!(loads.load(Ordering::SeqCst), 1);
+        assert_eq!(snapshot.revision, 8);
     }
 }

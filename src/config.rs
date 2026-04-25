@@ -223,6 +223,12 @@ impl Config {
             return Ok(());
         }
 
+        if self.web.listings_snapshot_source != ListingsSnapshotSource::Materialized {
+            bail!(
+                "web.listings_snapshot_source must be materialized when snapshot_worker.enabled is true"
+            );
+        }
+
         if self.web.snapshot_refresh_shared_secret.trim().is_empty() {
             bail!("web.snapshot_refresh_shared_secret must be set when snapshot_worker.enabled is true");
         }
@@ -456,6 +462,7 @@ snapshot_refresh_shared_secret = "   "
     fn snapshot_worker_validation_rejects_blank_refresh_url_and_secret_when_enabled() {
         let config: Config = toml::from_str(&minimal_config_toml(
             r#"
+listings_snapshot_source = "materialized"
 snapshot_refresh_shared_secret = "   "
 
 [snapshot_worker]
@@ -474,6 +481,30 @@ refresh_url = " "
             message.contains("snapshot_refresh_shared_secret")
                 || message.contains("snapshot_worker.refresh_url"),
             "unexpected validation error: {message}"
+        );
+    }
+
+    #[test]
+    fn snapshot_worker_validation_rejects_inline_snapshot_source_when_enabled() {
+        let config: Config = toml::from_str(&minimal_config_toml(
+            r#"
+listings_snapshot_source = "inline"
+snapshot_refresh_shared_secret = "worker-refresh-secret"
+
+[snapshot_worker]
+enabled = true
+refresh_url = "https://example.test/internal/listings/snapshot/refresh"
+"#,
+        ))
+        .expect("config should parse");
+
+        let error = config
+            .validate_for_snapshot_worker()
+            .expect_err("enabled worker must require materialized server mode");
+
+        assert!(
+            error.to_string().contains("listings_snapshot_source"),
+            "unexpected validation error: {error:#}"
         );
     }
 

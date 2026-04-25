@@ -69,8 +69,10 @@ snapshot_refresh_client_id = "listings-snapshot-worker"
 url = "YOUR_MONGODB_CONNECTION_STRING"
 
 [snapshot_worker]
-# Used only by the listings_snapshot_worker binary.
-enabled = true
+# Used only by the listings_snapshot_worker binary. Enable only with
+# listings_snapshot_source = "materialized", a shared refresh secret, and a
+# refresh_url pointing at the Koyeb internal refresh endpoint.
+enabled = false
 tick_seconds = 5
 force_rebuild_interval_seconds = 300
 lease_ttl_seconds = 120

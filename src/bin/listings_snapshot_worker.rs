@@ -154,7 +154,7 @@ async fn run_tick(
     let lease_collection = state.listing_snapshot_worker_lease_collection();
     let lease_acquired = try_acquire_snapshot_worker_lease(
         &lease_collection,
-        "current",
+        snapshot_worker_lease_document_id(&state.listings_snapshot_document_id),
         owner_id,
         Utc::now(),
         lease_ttl_seconds,
@@ -279,6 +279,10 @@ fn effective_owner_id(configured: &str) -> String {
     format!("{}-{}-{}", host, std::process::id(), Uuid::new_v4())
 }
 
+fn snapshot_worker_lease_document_id(snapshot_document_id: &str) -> &str {
+    snapshot_document_id
+}
+
 async fn send_refresh_request(
     client: &reqwest::Client,
     refresh_url: &str,
@@ -391,6 +395,14 @@ mod tests {
                 config_path: "worker.toml".to_string(),
                 once: false
             }
+        );
+    }
+
+    #[test]
+    fn lease_document_id_uses_configured_snapshot_document_id() {
+        assert_eq!(
+            snapshot_worker_lease_document_id("custom-current"),
+            "custom-current"
         );
     }
 }
