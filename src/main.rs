@@ -109,7 +109,10 @@ async fn get_config<P: AsRef<Path>>(path: P) -> anyhow::Result<Config> {
     f.read_to_string(&mut toml)
         .await
         .context("could not read config file")?;
-    let config = toml::from_str(&toml).context("could not parse config file")?;
+    let mut config: Config = toml::from_str(&toml).context("could not parse config file")?;
+    config
+        .apply_env_overrides_from_env()
+        .context("could not apply environment config overrides")?;
 
     Ok(config)
 }
