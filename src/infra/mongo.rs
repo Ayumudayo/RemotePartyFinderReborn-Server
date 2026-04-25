@@ -8,7 +8,7 @@ use chrono::{DateTime, TimeDelta, Utc};
 use futures_util::StreamExt;
 use mongodb::{
     bson::{doc, Document},
-    options::{FindOptions, UpdateOptions},
+    options::{FindOneOptions, FindOptions, UpdateOptions},
     results::UpdateResult,
     Collection,
 };
@@ -734,10 +734,33 @@ pub async fn get_zone_cache(
     zone_key: &str,
 ) -> anyhow::Result<Option<ZoneCache>> {
     let cache_doc = collection
-        .find_one(doc! { "content_id": content_id as i64 }, None)
+        .find_one(
+            doc! { "content_id": content_id as i64 },
+            Some(zone_cache_find_one_options(zone_key)),
+        )
         .await?;
 
     Ok(cache_doc.and_then(|doc| doc.zones.get(zone_key).cloned()))
+}
+
+fn zone_cache_projection(zone_key: &str) -> Document {
+    let mut projection = doc! {
+        "content_id": 1,
+    };
+    projection.insert(format!("zones.{zone_key}"), 1);
+    projection
+}
+
+fn zone_cache_find_one_options(zone_key: &str) -> FindOneOptions {
+    FindOneOptions::builder()
+        .projection(zone_cache_projection(zone_key))
+        .build()
+}
+
+fn zone_cache_find_options(zone_key: &str) -> FindOptions {
+    FindOptions::builder()
+        .projection(zone_cache_projection(zone_key))
+        .build()
 }
 
 pub async fn get_zone_caches(
@@ -747,7 +770,10 @@ pub async fn get_zone_caches(
 ) -> anyhow::Result<HashMap<u64, ZoneCache>> {
     let ids = content_ids.iter().map(|id| *id as i64).collect::<Vec<_>>();
     let cursor = collection
-        .find(doc! { "content_id": { "$in": ids } }, None)
+        .find(
+            doc! { "content_id": { "$in": ids } },
+            Some(zone_cache_find_options(zone_key)),
+        )
         .await?;
 
     let docs = cursor
@@ -887,7 +913,7 @@ mod tests {
         build_identity_compare_and_set_filter, build_identity_upsert_update,
         build_player_upsert_documents, dedupe_players_by_preferred_order, is_duplicate_key_error,
         player_lookup_find_options, report_parse_summary_find_options,
-        report_parse_summary_identity_filter, PreparedPlayerUpsert,
+        report_parse_summary_identity_filter, zone_cache_find_options, PreparedPlayerUpsert,
     };
     use chrono::Utc;
     use mongodb::bson::doc;
@@ -1057,6 +1083,16 @@ mod tests {
         assert_eq!(deduped[0].content_id, 9009);
         assert_eq!(deduped[0].name, "Preferred");
         assert_eq!(deduped[1].content_id, 9010);
+    }
+
+    #[test]
+    fn zone_cache_lookup_projects_only_requested_zone() {
+        let options = zone_cache_find_options("73:101:1");
+        let projection = options.projection.expect("projection should be set");
+
+        assert_eq!(projection.get_i32("content_id").unwrap(), 1);
+        assert_eq!(projection.get_i32("zones.73:101:1").unwrap(), 1);
+        assert_eq!(projection.len(), 2);
     }
 
     #[test]
