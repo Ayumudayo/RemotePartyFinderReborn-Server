@@ -147,7 +147,7 @@ fn default_monitor_snapshot_interval_seconds() -> u64 {
 }
 
 fn default_listings_revision_coalesce_millis() -> u64 {
-    1000
+    250
 }
 
 fn default_listings_snapshot_source() -> ListingsSnapshotSource {
@@ -203,7 +203,7 @@ fn default_snapshot_worker_enabled() -> bool {
 }
 
 fn default_snapshot_worker_tick_seconds() -> u64 {
-    5
+    1
 }
 
 fn default_snapshot_worker_force_rebuild_interval_seconds() -> u64 {

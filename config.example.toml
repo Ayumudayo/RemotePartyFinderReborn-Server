@@ -58,6 +58,7 @@ listing_source_state_collection = "listing_source_state"
 listing_source_state_document_id = "current"
 listing_snapshot_revision_state_collection = "listing_snapshot_revision_state"
 listing_snapshot_worker_lease_collection = "listing_snapshot_worker_leases"
+listings_revision_coalesce_millis = 250
 materialized_snapshot_reconcile_interval_seconds = 30
 
 # Required when listings_snapshot_source = "materialized" or when running the
@@ -75,7 +76,7 @@ url = "YOUR_MONGODB_CONNECTION_STRING"
 # listings_snapshot_source = "materialized", a shared refresh secret, and a
 # refresh_url pointing at the Koyeb internal refresh endpoint.
 enabled = false
-tick_seconds = 5
+tick_seconds = 1
 force_rebuild_interval_seconds = 300
 lease_ttl_seconds = 120
 owner_id = ""

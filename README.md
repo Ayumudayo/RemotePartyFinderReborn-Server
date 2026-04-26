@@ -117,6 +117,7 @@ host = "0.0.0.0:8000"
 listings_snapshot_source = "materialized"
 listings_snapshot_document_id = "current"
 listing_source_state_document_id = "current"
+listings_revision_coalesce_millis = 250
 materialized_snapshot_reconcile_interval_seconds = 5
 snapshot_refresh_shared_secret = "<same-long-random-secret-as-worker>"
 snapshot_refresh_client_id = "listings-snapshot-worker"
@@ -142,7 +143,7 @@ url = "<same-mongodb-connection-string-as-web-server>"
 [snapshot_worker]
 enabled = true
 refresh_url = "https://<web-host>/internal/listings/snapshot/refresh"
-tick_seconds = 5
+tick_seconds = 1
 force_rebuild_interval_seconds = 300
 lease_ttl_seconds = 120
 owner_id = "rpi-listings-snapshot-worker"

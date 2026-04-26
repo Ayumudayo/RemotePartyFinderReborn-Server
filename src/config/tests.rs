@@ -43,6 +43,7 @@ fn config_defaults_to_inline_listings_snapshot_source_and_safe_materialized_name
         config.web.materialized_snapshot_reconcile_interval_seconds,
         30
     );
+    assert_eq!(config.web.listings_revision_coalesce_millis, 250);
     assert_eq!(config.web.snapshot_refresh_shared_secret, "");
     assert_eq!(
         config.web.snapshot_refresh_client_id,
@@ -104,7 +105,7 @@ fn snapshot_worker_defaults_are_safe_but_server_inline_validation_ignores_refres
     let config: Config = toml::from_str(&minimal_config_toml("")).expect("config should parse");
 
     assert!(config.snapshot_worker.enabled);
-    assert_eq!(config.snapshot_worker.tick_seconds, 5);
+    assert_eq!(config.snapshot_worker.tick_seconds, 1);
     assert_eq!(config.snapshot_worker.force_rebuild_interval_seconds, 300);
     assert_eq!(config.snapshot_worker.lease_ttl_seconds, 120);
     assert_eq!(config.snapshot_worker.owner_id, "");

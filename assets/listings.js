@@ -1036,7 +1036,7 @@
             if (document.visibilityState !== 'hidden') {
                 if (liveUpdates.pendingRefresh) {
                     liveUpdates.pendingRefresh = false;
-                    scheduleListingsRefresh(1000);
+                    scheduleListingsRefresh(500);
                 } else if (shouldRetry) {
                     scheduleSnapshotRetry();
                 }
@@ -1044,7 +1044,7 @@
         }
     }
 
-    function scheduleListingsRefresh(delay = 1500) {
+    function scheduleListingsRefresh(delay = 500) {
         if (document.visibilityState === 'hidden') {
             liveUpdates.pendingRefresh = true;
             return;
