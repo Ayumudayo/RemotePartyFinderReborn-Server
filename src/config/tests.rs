@@ -1,4 +1,3 @@
-
 use super::{Config, ListingsSnapshotSource};
 
 fn minimal_config_toml(extra_web: &str) -> String {

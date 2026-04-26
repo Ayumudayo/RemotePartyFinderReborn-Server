@@ -1,4 +1,3 @@
-
 use super::{encode_fflogs_path_segment, ParseDisplay, RenderableListing, RenderableMember};
 use crate::listing::{
     ConditionFlags, DutyCategory, DutyFinderSettingsFlags, DutyType, JobFlags, LootRuleFlags,
