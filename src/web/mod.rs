@@ -25,6 +25,7 @@ use crate::player::Player;
 use crate::stats::CachedStatistics;
 
 pub mod background;
+pub mod contribute;
 pub mod fflogs_ingest;
 pub mod handlers;
 pub mod ingest_guard;

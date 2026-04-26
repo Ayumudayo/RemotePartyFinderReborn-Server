@@ -2,7 +2,7 @@ use std::sync::Arc;
 use warp::{filters::BoxedFilter, http::Uri, Filter, Reply};
 
 use super::State;
-use super::{fflogs_ingest, handlers};
+use super::{contribute, fflogs_ingest, handlers};
 use crate::listing::PartyFinderListing;
 use crate::player::{UploadableCharacterIdentity, UploadablePlayer};
 
@@ -84,7 +84,7 @@ fn contribute(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         ))
         .and(warp::body::json())
         .and_then(move |headers, remote_addr, listing: PartyFinderListing| {
-            handlers::contribute_handler(Arc::clone(&state), headers, remote_addr, listing)
+            contribute::contribute_handler(Arc::clone(&state), headers, remote_addr, listing)
         });
     warp::post().and(route).boxed()
 }
@@ -101,7 +101,7 @@ fn contribute_multiple(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::body::json())
         .and_then(
             move |headers, remote_addr, listings: Vec<PartyFinderListing>| {
-                handlers::contribute_multiple_handler(
+                contribute::contribute_multiple_handler(
                     Arc::clone(&state),
                     headers,
                     remote_addr,
@@ -124,7 +124,7 @@ fn contribute_players(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::body::json())
         .and_then(
             move |headers, remote_addr, players: Vec<UploadablePlayer>| {
-                handlers::contribute_players_handler(
+                contribute::contribute_players_handler(
                     Arc::clone(&state),
                     headers,
                     remote_addr,
@@ -147,7 +147,7 @@ fn contribute_character_identity(state: Arc<State>) -> BoxedFilter<(impl Reply,)
         .and(warp::body::json())
         .and_then(
             move |headers, remote_addr, identities: Vec<UploadableCharacterIdentity>| {
-                handlers::contribute_character_identity_handler(
+                contribute::contribute_character_identity_handler(
                     Arc::clone(&state),
                     headers,
                     remote_addr,
@@ -169,8 +169,8 @@ fn contribute_detail(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         ))
         .and(warp::body::json())
         .and_then(
-            move |headers, remote_addr, detail: handlers::UploadablePartyDetail| {
-                handlers::contribute_detail_handler(
+            move |headers, remote_addr, detail: contribute::UploadablePartyDetail| {
+                contribute::contribute_detail_handler(
                     Arc::clone(&state),
                     headers,
                     remote_addr,
