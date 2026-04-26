@@ -54,11 +54,30 @@ fn hydrate_slot(
     encounters: &HashMap<String, EncounterParse>,
     encounter_id: u32,
 ) -> (Option<u8>, String, Option<u8>, Option<u16>) {
+    hydrate_slot_with_display_rule(encounters, encounter_id, encounter_has_display_percentile)
+}
+
+fn hydrate_fallback_slot(
+    encounters: &HashMap<String, EncounterParse>,
+    encounter_id: u32,
+) -> (Option<u8>, String, Option<u8>, Option<u16>) {
+    hydrate_slot_with_display_rule(
+        encounters,
+        encounter_id,
+        encounter_has_report_fallback_display_percentile,
+    )
+}
+
+fn hydrate_slot_with_display_rule(
+    encounters: &HashMap<String, EncounterParse>,
+    encounter_id: u32,
+    has_display_percentile: fn(&EncounterParse) -> bool,
+) -> (Option<u8>, String, Option<u8>, Option<u16>) {
     let Some(enc_parse) = encounters.get(&encounter_id.to_string()) else {
         return (None, "parse-none".to_string(), None, None);
     };
 
-    let percentile = if encounter_has_display_percentile(enc_parse) {
+    let percentile = if has_display_percentile(enc_parse) {
         Some(enc_parse.percentile.clamp(0.0, 100.0).floor() as u8)
     } else {
         None
@@ -85,6 +104,10 @@ fn encounter_has_positive_clear_count(encounter: &EncounterParse) -> bool {
 fn encounter_has_display_percentile(encounter: &EncounterParse) -> bool {
     encounter.percentile > 0.0
         || (encounter.percentile == 0.0 && encounter_has_positive_clear_count(encounter))
+}
+
+fn encounter_has_report_fallback_display_percentile(encounter: &EncounterParse) -> bool {
+    encounter.percentile > 0.0
 }
 
 fn encounter_has_relevant_data(encounter: &EncounterParse) -> bool {
@@ -126,6 +149,27 @@ fn hydrate_resolved(
 
     if let Some(sec_id) = secondary_encounter_id {
         let (p2, p2_class, p2_boss, p2_clears) = hydrate_slot(encounters, sec_id);
+        resolved.secondary_percentile = p2;
+        resolved.secondary_color_class = p2_class;
+        resolved.secondary_boss_percentage = p2_boss;
+        resolved.secondary_clear_count = p2_clears;
+    }
+}
+
+fn hydrate_fallback_resolved(
+    resolved: &mut ResolvedParseData,
+    encounters: &HashMap<String, EncounterParse>,
+    encounter_id: u32,
+    secondary_encounter_id: Option<u32>,
+) {
+    let (p1, p1_class, p1_boss, p1_clears) = hydrate_fallback_slot(encounters, encounter_id);
+    resolved.primary_percentile = p1;
+    resolved.primary_color_class = p1_class;
+    resolved.primary_boss_percentage = p1_boss;
+    resolved.primary_clear_count = p1_clears;
+
+    if let Some(sec_id) = secondary_encounter_id {
+        let (p2, p2_class, p2_boss, p2_clears) = hydrate_fallback_slot(encounters, sec_id);
         resolved.secondary_percentile = p2;
         resolved.secondary_color_class = p2_class;
         resolved.secondary_boss_percentage = p2_boss;
@@ -175,7 +219,10 @@ fn fallback_should_override_visible_plugin(
 
     for id in requested_encounter_ids(encounter_id, secondary_encounter_id) {
         let plugin_percentile = encounter_display_percentile(&plugin_zone_cache.encounters, id);
-        let fallback_percentile = encounter_display_percentile(fallback_encounters, id);
+        let fallback_percentile = fallback_encounters
+            .get(&id.to_string())
+            .filter(|encounter| encounter_has_report_fallback_display_percentile(encounter))
+            .map(|encounter| encounter.percentile);
 
         if let Some(plugin_percentile) = plugin_percentile {
             match fallback_percentile {
@@ -213,7 +260,7 @@ pub fn resolve_parse_data(
                     secondary_encounter_id,
                 ) {
                     resolved.source = ParseSource::ReportParse;
-                    hydrate_resolved(
+                    hydrate_fallback_resolved(
                         &mut resolved,
                         encounters,
                         encounter_id,
@@ -241,7 +288,7 @@ pub fn resolve_parse_data(
             ) {
                 resolved.source = ParseSource::ReportParse;
                 resolved.originally_hidden = true;
-                hydrate_resolved(
+                hydrate_fallback_resolved(
                     &mut resolved,
                     encounters,
                     encounter_id,
@@ -261,7 +308,7 @@ pub fn resolve_parse_data(
                 secondary_encounter_id,
             ) {
                 resolved.source = ParseSource::ReportParse;
-                hydrate_resolved(
+                hydrate_fallback_resolved(
                     &mut resolved,
                     encounters,
                     encounter_id,
@@ -392,6 +439,32 @@ mod tests {
         assert_eq!(resolved.primary_percentile, Some(91));
         assert!(!resolved.hidden);
         assert!(!resolved.originally_hidden);
+    }
+
+    #[test]
+    fn resolve_parse_data_keeps_report_parse_clear_count_without_zero_percentile() {
+        let fallback = HashMap::from([("123".to_string(), encounter(0.0, None, Some(3)))]);
+
+        let resolved = resolve_parse_data(None, Some(&fallback), None, 123, None);
+
+        assert_eq!(resolved.source, ParseSource::ReportParse);
+        assert_eq!(resolved.primary_percentile, None);
+        assert_eq!(resolved.primary_color_class, "parse-none");
+        assert_eq!(resolved.primary_clear_count, Some(3));
+    }
+
+    #[test]
+    fn resolve_parse_data_keeps_hidden_report_clear_count_without_zero_percentile() {
+        let plugin = zone_cache(true, false, HashMap::new());
+        let fallback = HashMap::from([("123".to_string(), encounter(0.0, None, Some(3)))]);
+
+        let resolved = resolve_parse_data(Some(&plugin), Some(&fallback), None, 123, None);
+
+        assert_eq!(resolved.source, ParseSource::ReportParse);
+        assert!(resolved.originally_hidden);
+        assert_eq!(resolved.primary_percentile, None);
+        assert_eq!(resolved.primary_color_class, "parse-none");
+        assert_eq!(resolved.primary_clear_count, Some(3));
     }
 
     #[test]
