@@ -1,4 +1,3 @@
-
 use super::{build_detail_update_doc, detail_payload_is_too_large, UploadablePartyDetail};
 use chrono::Utc;
 use std::sync::Arc;
