@@ -356,7 +356,9 @@ fn translations_js() -> BoxedFilter<(impl Reply,)> {
 
 #[cfg(test)]
 mod tests {
-    use super::immutable_asset_cache_control;
+    use super::{immutable_asset_cache_control, router};
+    use crate::web::test_support::{sample_listing, state_with_signature_required};
+    use warp::http::StatusCode;
 
     #[test]
     fn immutable_asset_cache_control_is_long_lived() {
@@ -364,5 +366,78 @@ mod tests {
             immutable_asset_cache_control(),
             "public, max-age=31536000, immutable"
         );
+    }
+
+    #[tokio::test]
+    async fn contribute_routes_bind_request_bodies_before_authorization() {
+        let route = router(state_with_signature_required().await);
+        let listing = serde_json::to_string(&sample_listing()).unwrap();
+
+        for (path, body) in [
+            ("/contribute", listing),
+            ("/contribute/multiple", "[]".to_string()),
+            ("/contribute/players", "[]".to_string()),
+            ("/contribute/character-identity", "[]".to_string()),
+            (
+                "/contribute/detail",
+                r#"{"listing_id":1,"leader_content_id":2,"leader_name":"Leader","home_world":73,"member_content_ids":[2],"member_jobs":[37],"slot_flags":["0x0000000000000001"]}"#
+                    .to_string(),
+            ),
+        ] {
+            let response = warp::test::request()
+                .method("POST")
+                .path(path)
+                .header("content-type", "application/json")
+                .body(body)
+                .reply(&route)
+                .await;
+
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "route {path} should reach authorization after JSON binding"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fflogs_routes_bind_request_bodies_before_authorization() {
+        let route = router(state_with_signature_required().await);
+
+        let jobs_response = warp::test::request()
+            .method("GET")
+            .path("/contribute/fflogs/jobs")
+            .reply(&route)
+            .await;
+        assert_eq!(
+            jobs_response.status(),
+            StatusCode::UNAUTHORIZED,
+            "FFLogs jobs route should reach authorization"
+        );
+
+        for (path, body) in [
+            (
+                "/contribute/fflogs/results",
+                r#"[{"content_id":1,"zone_id":73,"difficulty_id":101,"partition":1,"encounters":{"1":95.0},"boss_percentages":{},"clear_counts":{"1":1},"is_hidden":false,"is_estimated":false,"matched_server":"Chocobo","lease_token":"lease"}]"#,
+            ),
+            (
+                "/contribute/fflogs/leases/abandon",
+                r#"[{"content_id":1,"zone_id":73,"difficulty_id":101,"partition":1,"lease_token":"lease","reason":"test"}]"#,
+            ),
+        ] {
+            let response = warp::test::request()
+                .method("POST")
+                .path(path)
+                .header("content-type", "application/json")
+                .body(body)
+                .reply(&route)
+                .await;
+
+            assert_eq!(
+                response.status(),
+                StatusCode::UNAUTHORIZED,
+                "route {path} should reach authorization after JSON binding"
+            );
+        }
     }
 }

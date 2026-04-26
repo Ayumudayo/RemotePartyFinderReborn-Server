@@ -25,11 +25,13 @@ use crate::player::Player;
 use crate::stats::CachedStatistics;
 
 pub mod background;
-pub mod contribute;
-pub mod fflogs_ingest;
+mod contribute;
+mod fflogs_ingest;
 pub mod handlers;
 pub mod ingest_guard;
 pub mod routes;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub const FFLOGS_LEASE_TTL_MINUTES: i64 = 3;
 pub const FFLOGS_LEASE_SWEEP_INTERVAL_SECONDS: u64 = 30;
