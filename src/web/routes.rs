@@ -1,8 +1,8 @@
 use std::sync::Arc;
 use warp::{filters::BoxedFilter, http::Uri, Filter, Reply};
 
-use super::handlers;
 use super::State;
+use super::{fflogs_ingest, handlers};
 use crate::listing::PartyFinderListing;
 use crate::player::{UploadableCharacterIdentity, UploadablePlayer};
 
@@ -189,7 +189,7 @@ fn contribute_fflogs_jobs(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         .and(warp::header::headers_cloned())
         .and(warp::addr::remote())
         .and_then(move |headers, remote_addr| {
-            handlers::contribute_fflogs_jobs_handler(Arc::clone(&state), headers, remote_addr)
+            fflogs_ingest::contribute_fflogs_jobs_handler(Arc::clone(&state), headers, remote_addr)
         });
     warp::get().and(route).boxed()
 }
@@ -206,8 +206,8 @@ fn contribute_fflogs_results(state: Arc<State>) -> BoxedFilter<(impl Reply,)> {
         ))
         .and(warp::body::json())
         .and_then(
-            move |headers, remote_addr, results: Vec<handlers::ParseResult>| {
-                handlers::contribute_fflogs_results_handler(
+            move |headers, remote_addr, results: Vec<fflogs_ingest::ParseResult>| {
+                fflogs_ingest::contribute_fflogs_results_handler(
                     Arc::clone(&state),
                     headers,
                     remote_addr,
@@ -231,8 +231,8 @@ fn contribute_fflogs_leases_abandon(state: Arc<State>) -> BoxedFilter<(impl Repl
         ))
         .and(warp::body::json())
         .and_then(
-            move |headers, remote_addr, leases: Vec<handlers::AbandonFflogsLease>| {
-                handlers::contribute_fflogs_leases_abandon_handler(
+            move |headers, remote_addr, leases: Vec<fflogs_ingest::AbandonFflogsLease>| {
+                fflogs_ingest::contribute_fflogs_leases_abandon_handler(
                     Arc::clone(&state),
                     headers,
                     remote_addr,
