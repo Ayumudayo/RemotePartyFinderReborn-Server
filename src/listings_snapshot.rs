@@ -1,9 +1,9 @@
 use crate::listing::{ConditionFlags, ObjectiveFlags, PartyFinderListing, SearchAreaFlags};
 use crate::listing_container::QueriedListing;
+use crate::listings_render::build_listings_template;
 use crate::template::listings::{
     ParseDisplay, ProgressDisplay, RenderableListing, RenderableMember,
 };
-use crate::web::handlers::build_listings_template;
 use crate::web::{CachedListingsSnapshot, State};
 use anyhow::Context;
 use chrono::{DateTime, Utc};
