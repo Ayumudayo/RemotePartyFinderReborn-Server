@@ -187,58 +187,10 @@ fn relevant_fallback_encounters(
     })
 }
 
-fn report_parse_is_newer_than_plugin(
-    plugin_zone_cache: &ZoneCache,
-    fallback_updated_at: Option<chrono::DateTime<chrono::Utc>>,
-) -> bool {
-    fallback_updated_at
-        .map(|updated_at| updated_at > plugin_zone_cache.fetched_at)
-        .unwrap_or(false)
-}
-
-fn encounter_display_percentile(
-    encounters: &HashMap<String, EncounterParse>,
-    encounter_id: u32,
-) -> Option<f32> {
-    encounters
-        .get(&encounter_id.to_string())
-        .filter(|encounter| encounter_has_display_percentile(encounter))
-        .map(|encounter| encounter.percentile)
-}
-
-fn fallback_should_override_visible_plugin(
-    plugin_zone_cache: &ZoneCache,
-    fallback_encounters: &HashMap<String, EncounterParse>,
-    fallback_updated_at: Option<chrono::DateTime<chrono::Utc>>,
-    encounter_id: u32,
-    secondary_encounter_id: Option<u32>,
-) -> bool {
-    if !report_parse_is_newer_than_plugin(plugin_zone_cache, fallback_updated_at) {
-        return false;
-    }
-
-    for id in requested_encounter_ids(encounter_id, secondary_encounter_id) {
-        let plugin_percentile = encounter_display_percentile(&plugin_zone_cache.encounters, id);
-        let fallback_percentile = fallback_encounters
-            .get(&id.to_string())
-            .filter(|encounter| encounter_has_report_fallback_display_percentile(encounter))
-            .map(|encounter| encounter.percentile);
-
-        if let Some(plugin_percentile) = plugin_percentile {
-            match fallback_percentile {
-                Some(fallback_percentile) if fallback_percentile > plugin_percentile => {}
-                _ => return false,
-            }
-        }
-    }
-
-    true
-}
-
 pub fn resolve_parse_data(
     plugin_zone_cache: Option<&ZoneCache>,
     fallback_encounters: Option<&HashMap<String, EncounterParse>>,
-    fallback_updated_at: Option<chrono::DateTime<chrono::Utc>>,
+    _fallback_updated_at: Option<chrono::DateTime<chrono::Utc>>,
     encounter_id: u32,
     secondary_encounter_id: Option<u32>,
 ) -> ResolvedParseData {
@@ -247,29 +199,6 @@ pub fn resolve_parse_data(
 
     match plugin_zone_cache {
         Some(zone_cache) if !zone_cache.hidden => {
-            if let Some(encounters) = relevant_fallback_encounters(
-                fallback_encounters,
-                encounter_id,
-                secondary_encounter_id,
-            ) {
-                if fallback_should_override_visible_plugin(
-                    zone_cache,
-                    encounters,
-                    fallback_updated_at,
-                    encounter_id,
-                    secondary_encounter_id,
-                ) {
-                    resolved.source = ParseSource::ReportParse;
-                    hydrate_fallback_resolved(
-                        &mut resolved,
-                        encounters,
-                        encounter_id,
-                        secondary_encounter_id,
-                    );
-                    return resolved;
-                }
-            }
-
             resolved.source = ParseSource::Plugin;
             resolved.estimated = zone_cache.estimated;
             hydrate_resolved(
@@ -499,7 +428,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_parse_data_uses_newer_report_parse_over_stale_visible_plugin_data() {
+    fn resolve_parse_data_keeps_visible_plugin_data_over_newer_report_parse() {
         let plugin_fetched_at = Utc::now() - TimeDelta::try_minutes(30).unwrap();
         let report_updated_at = plugin_fetched_at + TimeDelta::try_minutes(10).unwrap();
         let plugin = zone_cache_at(
@@ -518,10 +447,10 @@ mod tests {
             None,
         );
 
-        assert_eq!(resolved.source, ParseSource::ReportParse);
-        assert_eq!(resolved.primary_percentile, Some(93));
-        assert_eq!(resolved.primary_boss_percentage, Some(4));
-        assert_eq!(resolved.primary_clear_count, Some(5));
+        assert_eq!(resolved.source, ParseSource::Plugin);
+        assert_eq!(resolved.primary_percentile, Some(72));
+        assert_eq!(resolved.primary_boss_percentage, None);
+        assert_eq!(resolved.primary_clear_count, Some(1));
         assert!(!resolved.hidden);
         assert!(!resolved.originally_hidden);
     }
